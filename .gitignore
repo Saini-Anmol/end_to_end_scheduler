@@ -1,0 +1,19 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+.DS_Store
+.idea/
+.vscode/
+uv.lock.bak
+# Keep output folder structure but ignore run artefacts
+output/*/
+!output/.gitkeep

@@ -1,0 +1,4 @@
+- [Pilot data landmines](data_quirks_pilot.md) — duplicate Aging Master rows, mixed unit pairs, FRC contention, IL3/EHT1000 conflicts
+- [Common approach weaknesses](approach_pitfalls.md) — backward window misuse, repair loops, weak FEFO scoping, ignoring tiebreakers
+- [V1 scope boundary patrol](v1_boundary.md) — what NOT to penalise (changeover, utilisation, secondary-Building clustering) and what MUST be flagged
+- [Tyre-plant rules of thumb](plant_floor_heuristics.md) — FRC behaviour, mixing-room batch aggregation, scrap risk on MAX-aged sidewall, building lot duration math

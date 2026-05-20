@@ -1,0 +1,6 @@
+- [User profile](user_role.md) — implementer of the JK Tyre BTP V1 scheduler; deep domain knowledge
+- [Recurring defects](recurring_defects.md) — patterns seen across reviews; check first before scanning
+- [Module hotspots](module_hotspots.md) — which files carry the highest risk per review session
+- [Verification commands](verification_commands.md) — pipeline run, diff, test commands that proved useful
+- [Codebase idioms](codebase_idioms.md) — patterns that look wrong but are intentional
+- [Golden fixtures](golden_fixtures.md) — Section 17 fixture coverage status

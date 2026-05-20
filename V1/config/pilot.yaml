@@ -1,0 +1,64 @@
+# Pilot configuration — JK Tyre BTP V1 forward scheduler
+# Values here mirror the locked decisions in CLAUDE.md. Treat as the single
+# source of truth for tunables; constants.py loads this at import time.
+
+pilot:
+  sku_code: "1325220516095HTMX0"
+  sku_description: "205/65 R16 Passenger-Car Radial (Taxi MX TL)"
+  green_tyre_code: "GT2056516TAXIMXTL"
+  curing_press: "14811"            # string — leading zeros matter elsewhere (L23)
+  horizon_start: "2026-05-17 06:49"
+  horizon_end:   "2026-05-30 22:19"
+  total_demand_tyres: 2620
+  pre_existing_gt_inventory: 0
+
+# L17 — t0 anchor (placeholder). Real L2-derived t0 is deferred to V2.
+t0:
+  default: "2026-05-01 07:00"
+  guardrail_assertion: true        # HALT if t0 + sum(MIN_aging) along longest path > first_curing_start
+
+# L10 / L20 — efficiency factor, single ceil rounding direction.
+efficiency:
+  factor: 0.95
+
+# Soft-rule defaults (Section 6, V1 settings)
+defaults:
+  transfer_time_min: 10            # Section 9 finding #3 — fallback when null in routing
+  changeover_min_v1: 0             # L8 — V1 sets changeover to 0 always
+
+# L3 / L18 — Tyre Building pinning. V1 deterministic primary = lowest in pool.
+building:
+  pool: ["6001", "6002", "6003", "6004", "7001", "7002", "7003", "7004"]
+  primary: "6001"                  # spill to next-lowest only on aging-MAX breach
+
+# L12 — Capstrip chain exclusion. Skip entirely from lots/schedule/infeasibilities.
+exclusions:
+  capstrip_items:
+    - "CAP 66 - CAPSTRIP"
+    - "CAP 66-MOTHERROLL"
+    - "CAP 66"
+    - "B616M"
+    - "MB614"
+
+# L13 — Work-Away reclaim/scrap inputs. Treated as already available.
+work_away_items:
+  - "IL3 WA"
+  - "JT444WA"
+  - "HS106 WA"
+  - "T4004WA"
+
+# Output run-id format. (HHMM-DD-MM-YYYY)
+output:
+  run_id_format: "%H%M-%d-%m-%Y"
+  root: "output"
+
+# 8 in-scope Green-Tyre components (the AND-join set for Building lots).
+green_tyre_components:
+  - "CPJ1218-162MM/29°"
+  - "CPJ1218-154MM/29°-1"
+  - "TRD2056516TAXIMXTL"
+  - "IL2056516TAXIMXTL"
+  - "SSW2056516TAXIMXTL"
+  - "EHT1000-640MM/90°"
+  - "EHT1000 -480MM/90°"
+  - "BD-12843443-4"

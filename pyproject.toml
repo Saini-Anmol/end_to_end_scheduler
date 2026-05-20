@@ -1,0 +1,37 @@
+[project]
+name = "jkt-btp-scheduler"
+version = "0.1.0"
+description = "JK Tyre BTP forward production scheduler (V1 — demand fulfilment)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "pyyaml>=6.0",
+    "networkx>=3.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+]
+viz = [
+    "matplotlib>=3.8",
+    "plotly>=5.20",
+    "graphviz>=0.20",
+]
+
+[project.scripts]
+btp-scheduler = "V1.setups.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["V1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
