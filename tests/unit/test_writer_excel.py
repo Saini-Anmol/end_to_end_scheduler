@@ -64,17 +64,17 @@ class TestWriteFull:
         assert tuple(xl.sheet_names) == writer_excel.SHEET_NAMES
 
     def test_schedule_sheet_has_lot_rows(self, workbook_path: Path) -> None:
-        df = pd.read_excel(workbook_path, sheet_name="schedule")
+        df = writer_excel.read_sheet(workbook_path, "schedule")
         assert len(df) > 0
         assert {"lot_id", "machine_id", "start_min", "end_min", "qty", "uom"} \
             <= set(df.columns)
 
     def test_kpi_sheet_has_otif(self, workbook_path: Path) -> None:
-        df = pd.read_excel(workbook_path, sheet_name="kpi")
+        df = writer_excel.read_sheet(workbook_path, "kpi")
         assert "otif_pct" in df["metric"].values
 
     def test_summary_sheet_carries_run_id(self, workbook_path: Path) -> None:
-        df = pd.read_excel(workbook_path, sheet_name="summary")
+        df = writer_excel.read_sheet(workbook_path, "summary")
         row = df[df["metric"] == "run_id"]
         assert len(row) == 1
         assert str(row.iloc[0]["value"]) == "TEST"
@@ -82,7 +82,7 @@ class TestWriteFull:
     def test_machine_view_sorted_by_machine_then_start(
         self, workbook_path: Path
     ) -> None:
-        df = pd.read_excel(workbook_path, sheet_name="machine_view")
+        df = writer_excel.read_sheet(workbook_path, "machine_view")
         if len(df) == 0:
             pytest.skip("no scheduled lots")
         df_sorted = df.sort_values(["machine_id", "start_min", "lot_id"], kind="stable")
@@ -96,7 +96,7 @@ class TestWriteFull:
         """Sheet always exists; rows present iff the live inputs HALT.
         With BD Fillering proc_time now supplied in input/, this sheet is
         normally empty — we only assert structure."""
-        df = pd.read_excel(workbook_path, sheet_name="audit_halt")
+        df = writer_excel.read_sheet(workbook_path, "audit_halt")
         expected_cols = {"severity", "code", "sheet", "source_row_pandas",
                           "source_row_excel", "item_code", "message"}
         assert expected_cols <= set(df.columns)
@@ -125,13 +125,13 @@ class TestWriteFull:
             kpi=kpi, settings=settings, t0=norm.t0, run_id="SYN-HALT",
             output_dir=tmp_path,
         )
-        df = pd.read_excel(path, sheet_name="audit_halt")
+        df = writer_excel.read_sheet(path, "audit_halt")
         assert (df["item_code"] == "BD-12843443-4").any()
         bd = df[df["item_code"] == "BD-12843443-4"].iloc[0]
         assert int(bd["source_row_excel"]) == 61
 
     def test_infeasibilities_columns(self, workbook_path: Path) -> None:
-        df = pd.read_excel(workbook_path, sheet_name="infeasibilities")
+        df = writer_excel.read_sheet(workbook_path, "infeasibilities")
         expected = {"lot_id", "item_code", "op_seq",
                     "binding_constraint", "message"}
         assert expected <= set(df.columns)
@@ -160,6 +160,6 @@ class TestWriteHalt:
             audit=au, settings=settings, t0=norm.t0, run_id="HALT-TEST",
             output_dir=tmp_path,
         )
-        df = pd.read_excel(path, sheet_name="summary")
+        df = writer_excel.read_sheet(path, "summary")
         status = df[df["metric"] == "status"].iloc[0]["value"]
         assert status == "HALT"

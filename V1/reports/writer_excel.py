@@ -1,5 +1,5 @@
 """Writes the bundled `btp_schedule.xlsx` — a single workbook with one sheet
-per tabular artefact.
+per tabular artefact, formatted for planner consumption.
 
 Sheets (in tab order):
   - summary           — run-level metadata + headline KPIs
@@ -14,10 +14,20 @@ Sheets (in tab order):
   - audit_halt        — HALT findings only
   - audit_warn        — WARN findings only
 
-CSV, JSON, SVG and HTML outputs continue to be written alongside this
-workbook (Excel can't carry the dag graph or the Gantt HTML). The workbook
-is the headline artefact the planner opens; the individual files remain for
-downstream tooling and byte-identical re-run verification.
+Each sheet carries:
+  - Row 1: merged title bar (navy fill, white bold text).
+  - Row 2: column headers (banded blue fill, white bold).
+  - Row 3+: data, with cell-level conditional fills for utilisation %,
+            on_time_flag, classification, violation_type, and severity.
+  - Frozen panes below row 2 so title + header stay visible while scrolling.
+
+Use `writer_excel.read_sheet(path, sheet_name)` to read a sheet back as a
+DataFrame — it handles the title-row offset (`header=1`) so callers don't
+need to know about the layout.
+
+CSV, JSON, SVG and HTML outputs (`dag.json`, `bom_graph.svg`, `gantt_*.html`,
+`audit_report.md`) continue to be written alongside this workbook for
+downstream tooling. The workbook is the headline artefact the planner opens.
 """
 from __future__ import annotations
 
@@ -25,6 +35,8 @@ from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 
 from V1.config.enums import FindingSeverity
 from V1.config.settings import Settings
@@ -37,6 +49,13 @@ from V1.utilities.time_math import from_minute
 
 
 WORKBOOK_NAME = "btp_schedule.xlsx"
+
+# Layout: title in Excel row 1, header in row 2, data from row 3.
+TITLE_ROW = 1
+HEADER_ROW = 2
+DATA_START_ROW = 3
+# pandas `header=` arg to use when reading these workbooks back.
+PD_READ_HEADER = HEADER_ROW - 1  # 0-indexed → 1
 
 
 # Excel sheet names are capped at 31 chars; pick short, stable names.
@@ -53,6 +72,73 @@ SHEET_NAMES = (
     "audit_halt",
     "audit_warn",
 )
+
+
+# Human-readable titles rendered in each sheet's row 1.
+_SHEET_TITLES: dict[str, str] = {
+    "summary": "Run Summary",
+    "kpi": "Key Performance Indicators",
+    "schedule": "Production Schedule",
+    "machine_view": "Machine-Level Schedule",
+    "building_to_curing": "Building → Curing Handoff",
+    "aging_violations": "Aging Window Violations",
+    "infeasibilities": "Infeasible Lots",
+    "reservation_log": "Reservation Log",
+    "routing_cleaned": "Cleaned Routing",
+    "audit_halt": "Audit — HALT Findings",
+    "audit_warn": "Audit — Warnings",
+}
+
+
+# Colour palette (Excel-standard "Good/Neutral/Bad" tones + navy title bar).
+_C_TITLE_BG = "1F4E78"
+_C_TITLE_FG = "FFFFFF"
+_C_HEADER_BG = "305496"
+_C_HEADER_FG = "FFFFFF"
+_C_GREEN_BG = "C6EFCE"
+_C_YELLOW_BG = "FFEB9C"
+_C_RED_BG = "FFC7CE"
+_C_GRAY_BG = "D9D9D9"
+
+
+def _fill(hex_rgb: str) -> PatternFill:
+    return PatternFill("solid", fgColor=hex_rgb)
+
+
+# Utilisation % conditional bands (planner-supplied thresholds).
+#   >= 90       → green   (high utilisation)
+#   50  – <90   → yellow  (medium utilisation)
+#   <  50       → red     (low utilisation)
+def _utilisation_fill(pct: float) -> PatternFill | None:
+    if pct >= 90.0:
+        return _fill(_C_GREEN_BG)
+    if pct >= 50.0:
+        return _fill(_C_YELLOW_BG)
+    return _fill(_C_RED_BG)
+
+
+_CLASSIFICATION_FILL: dict[str, str] = {
+    "OK": _C_GREEN_BG,
+    "LATE": _C_RED_BG,
+    "EARLY": _C_YELLOW_BG,
+    "ZERO_QTY": _C_GRAY_BG,
+}
+
+_SEVERITY_FILL: dict[str, str] = {
+    "HALT": _C_RED_BG,
+    "WARN": _C_YELLOW_BG,
+}
+
+
+def read_sheet(workbook_path: Path, sheet_name: str) -> pd.DataFrame:
+    """Read a sheet back as a DataFrame, accounting for the row-1 title bar.
+
+    All downstream code (tests, planner notebooks, downstream tooling)
+    should use this helper rather than `pd.read_excel` directly, so the
+    title-row offset is encapsulated.
+    """
+    return pd.read_excel(workbook_path, sheet_name=sheet_name,
+                          header=PD_READ_HEADER)
 
 
 # --- builders for each sheet ----------------------------------------------
@@ -307,15 +393,147 @@ def write_halt(
 
 def _write_workbook(sheets: dict[str, pd.DataFrame], output_dir: Path) -> Path:
     path = output_dir / WORKBOOK_NAME
+    # `startrow=HEADER_ROW - 1` lays the pandas-emitted header on Excel
+    # row 2; row 1 is left empty for the merged title bar.
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         for name, df in sheets.items():
-            df.to_excel(writer, sheet_name=name, index=False)
+            df.to_excel(writer, sheet_name=name, index=False,
+                         startrow=HEADER_ROW - 1)
             ws = writer.sheets[name]
-            ws.freeze_panes = "A2"
-            # Width heuristic: header length + 2, capped at 60.
-            for col_idx, col in enumerate(df.columns, start=1):
-                width = min(60, max(12, len(str(col)) + 2))
-                ws.column_dimensions[
-                    ws.cell(row=1, column=col_idx).column_letter
-                ].width = width
+            _format_sheet(ws, df, name)
     return path
+
+
+def _format_sheet(ws, df: pd.DataFrame, sheet_name: str) -> None:
+    """Apply title bar, header banding, frozen panes, column widths, and
+    per-sheet categorical fills. Pure presentation — no data mutation."""
+    n_cols = max(1, len(df.columns))
+    n_rows = len(df)
+
+    # --- Row 1: merged title bar ------------------------------------------
+    title = _SHEET_TITLES.get(
+        sheet_name, sheet_name.replace("_", " ").title()
+    )
+    ws.cell(row=TITLE_ROW, column=1, value=title)
+    if n_cols > 1:
+        ws.merge_cells(
+            start_row=TITLE_ROW, end_row=TITLE_ROW,
+            start_column=1, end_column=n_cols,
+        )
+    title_cell = ws.cell(row=TITLE_ROW, column=1)
+    title_cell.font = Font(size=14, bold=True, color=_C_TITLE_FG)
+    title_cell.fill = _fill(_C_TITLE_BG)
+    title_cell.alignment = Alignment(horizontal="center", vertical="center")
+    ws.row_dimensions[TITLE_ROW].height = 28
+
+    # --- Row 2: column headers --------------------------------------------
+    header_font = Font(bold=True, color=_C_HEADER_FG)
+    header_fill = _fill(_C_HEADER_BG)
+    header_align = Alignment(horizontal="left", vertical="center")
+    for col_idx in range(1, n_cols + 1):
+        cell = ws.cell(row=HEADER_ROW, column=col_idx)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+    ws.row_dimensions[HEADER_ROW].height = 22
+
+    # Freeze title + header so they stay visible while scrolling data.
+    ws.freeze_panes = ws.cell(row=DATA_START_ROW, column=1)
+
+    # --- Per-sheet categorical fills (data rows) --------------------------
+    if sheet_name == "kpi" and n_rows > 0:
+        _shade_kpi_utilisation(ws, df)
+    elif sheet_name in ("schedule", "machine_view") and n_rows > 0:
+        _shade_on_time_flag(ws, df)
+    elif sheet_name == "building_to_curing" and n_rows > 0:
+        _shade_classification(ws, df)
+    elif sheet_name == "aging_violations" and n_rows > 0:
+        _shade_violation_type(ws, df)
+    elif sheet_name in ("audit_halt", "audit_warn") and n_rows > 0:
+        _shade_severity(ws, df)
+
+    # --- Column widths (header text length + 2, capped at 60) -------------
+    for col_idx, col in enumerate(df.columns, start=1):
+        width = min(60, max(12, len(str(col)) + 2))
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+
+def _data_range(n_rows: int) -> range:
+    """Excel row indices (1-based) for the data block."""
+    return range(DATA_START_ROW, DATA_START_ROW + n_rows)
+
+
+def _col_index(df: pd.DataFrame, col_name: str) -> int | None:
+    """1-based column index of `col_name` in df, or None if absent."""
+    if col_name not in df.columns:
+        return None
+    return list(df.columns).index(col_name) + 1
+
+
+def _shade_kpi_utilisation(ws, df: pd.DataFrame) -> None:
+    """Colour every utilisation-% cell in the kpi sheet.
+
+    The kpi sheet is a (metric, value) long-table; we scan for rows whose
+    metric name ends in `_util_pct` and shade the value cell.
+    """
+    metric_col = _col_index(df, "metric")
+    value_col = _col_index(df, "value")
+    if metric_col is None or value_col is None:
+        return
+    for row_idx, df_row_idx in zip(_data_range(len(df)), df.index):
+        metric = str(df.at[df_row_idx, "metric"])
+        if not metric.endswith("_util_pct"):
+            continue
+        raw = df.at[df_row_idx, "value"]
+        try:
+            pct = float(raw)
+        except (TypeError, ValueError):
+            continue
+        fill = _utilisation_fill(pct)
+        if fill is not None:
+            ws.cell(row=row_idx, column=value_col).fill = fill
+
+
+def _shade_on_time_flag(ws, df: pd.DataFrame) -> None:
+    col = _col_index(df, "on_time_flag")
+    if col is None:
+        return
+    for row_idx, df_row_idx in zip(_data_range(len(df)), df.index):
+        val = df.at[df_row_idx, "on_time_flag"]
+        if val is True or str(val).strip().lower() == "true":
+            ws.cell(row=row_idx, column=col).fill = _fill(_C_GREEN_BG)
+        elif val is False or str(val).strip().lower() == "false":
+            ws.cell(row=row_idx, column=col).fill = _fill(_C_RED_BG)
+
+
+def _shade_classification(ws, df: pd.DataFrame) -> None:
+    col = _col_index(df, "classification")
+    if col is None:
+        return
+    for row_idx, df_row_idx in zip(_data_range(len(df)), df.index):
+        cls = str(df.at[df_row_idx, "classification"])
+        rgb = _CLASSIFICATION_FILL.get(cls)
+        if rgb is not None:
+            ws.cell(row=row_idx, column=col).fill = _fill(rgb)
+
+
+def _shade_violation_type(ws, df: pd.DataFrame) -> None:
+    """Any aging-window violation is bad — colour the type cell red."""
+    col = _col_index(df, "violation_type")
+    if col is None:
+        return
+    for row_idx, df_row_idx in zip(_data_range(len(df)), df.index):
+        val = df.at[df_row_idx, "violation_type"]
+        if isinstance(val, str) and val:
+            ws.cell(row=row_idx, column=col).fill = _fill(_C_RED_BG)
+
+
+def _shade_severity(ws, df: pd.DataFrame) -> None:
+    col = _col_index(df, "severity")
+    if col is None:
+        return
+    for row_idx, df_row_idx in zip(_data_range(len(df)), df.index):
+        sev = str(df.at[df_row_idx, "severity"])
+        rgb = _SEVERITY_FILL.get(sev)
+        if rgb is not None:
+            ws.cell(row=row_idx, column=col).fill = _fill(rgb)

@@ -5,13 +5,19 @@ pilot data is never modified by tests:
 
   1. **HALT path** — copy of inputs with BD-12843443-4 Fillering `proc_time`
      forced to NaN. Audit HALTs at code 10; downstream routes don't run;
-     schedule.csv is NOT written; `btp_schedule.xlsx` is still written but
-     with the HALT-only layout (summary + audit findings + routing_cleaned).
+     `btp_schedule.xlsx` is still written but with the HALT-only layout
+     (summary + audit findings + routing_cleaned sheet).
 
   2. **Full-pipeline path** — copy of inputs with `proc_time` ensured set
-     (60 SEC/BATCH if absent). All 12 routes run; every Section 11 artefact
-     lands in the run folder. Re-run and assert the deterministic artefacts
-     are byte-identical across runs (L11 / Section 12.2).
+     (60 SEC/BATCH if absent). All 13 pipeline steps run; the planner-facing
+     artefacts (`btp_schedule.xlsx`, `audit_report.md`, `dag.json`,
+     `bom_graph.svg`, `gantt_*.html`) land in the run folder.
+
+     Determinism (L11 / Section 12.2) is asserted on:
+       - `dag.json` — byte-identical (JSON is fully stable).
+       - `btp_schedule.xlsx` — sheet-by-sheet dataframe equality (the
+         workbook bytes include an openpyxl-embedded build timestamp, but
+         every cell value is reproducible).
 """
 from __future__ import annotations
 
@@ -85,12 +91,13 @@ class TestHaltPath:
         run_dir = runs[0]
         # Audit artefacts + the HALT-only workbook are present.
         assert (run_dir / "audit_report.md").exists()
-        assert (run_dir / "routing_cleaned.csv").exists()
         assert (run_dir / "btp_schedule.xlsx").exists()
-        # Downstream artefacts must NOT exist.
-        for downstream in ("schedule.csv", "machine_view.csv", "kpi.csv",
-                            "dag.json", "aging_violations.csv",
-                            "reservation_log.csv"):
+        # No standalone CSVs (or downstream artefacts) on HALT.
+        for downstream in ("routing_cleaned.csv", "schedule.csv",
+                            "machine_view.csv", "kpi.csv", "dag.json",
+                            "aging_violations.csv", "reservation_log.csv",
+                            "building_to_curing.csv", "infeasibilities.csv",
+                            "bom_graph.svg"):
             assert not (run_dir / downstream).exists()
 
 
@@ -122,18 +129,10 @@ class TestFullPath:
         b_dir = next(out_b.iterdir())
         return a_dir, b_dir
 
-    def test_every_section_11_artefact_emitted(self, two_runs) -> None:
+    def test_every_planner_artefact_emitted(self, two_runs) -> None:
         a_dir, _ = two_runs
         expected = {
             "audit_report.md",
-            "routing_cleaned.csv",
-            "schedule.csv",
-            "machine_view.csv",
-            "building_to_curing.csv",
-            "aging_violations.csv",
-            "infeasibilities.csv",
-            "reservation_log.csv",
-            "kpi.csv",
             "dag.json",
             "bom_graph.svg",
             "btp_schedule.xlsx",
@@ -142,6 +141,13 @@ class TestFullPath:
             assert (a_dir / name).exists(), f"missing artefact: {name}"
         # At least one gantt_*.html
         assert any(a_dir.glob("gantt_*.html"))
+        # Redundant CSVs that used to be emitted alongside the workbook must
+        # NOT reappear — they're all sheets inside btp_schedule.xlsx.
+        for legacy in ("routing_cleaned.csv", "schedule.csv",
+                        "machine_view.csv", "kpi.csv", "aging_violations.csv",
+                        "reservation_log.csv", "building_to_curing.csv",
+                        "infeasibilities.csv"):
+            assert not (a_dir / legacy).exists(), f"legacy CSV re-appeared: {legacy}"
 
     def test_bundled_excel_carries_every_sheet(self, two_runs) -> None:
         from V1.reports import writer_excel
@@ -149,35 +155,43 @@ class TestFullPath:
         wb = pd.ExcelFile(a_dir / "btp_schedule.xlsx")
         assert set(writer_excel.SHEET_NAMES) <= set(wb.sheet_names)
 
-    def test_deterministic_artefacts_byte_identical(self, two_runs) -> None:
-        """L11 / Section 12.2 — byte-identical re-run for deterministic artefacts."""
+    def test_dag_json_byte_identical(self, two_runs) -> None:
+        """L11 / Section 12.2 — JSON is byte-stable, so dag.json must match."""
         a_dir, b_dir = two_runs
-        deterministic = [
-            "routing_cleaned.csv",
-            "schedule.csv",
-            "machine_view.csv",
-            "building_to_curing.csv",
-            "aging_violations.csv",
-            "infeasibilities.csv",
-            "reservation_log.csv",
-            "kpi.csv",
-            "dag.json",
-        ]
-        for name in deterministic:
-            assert (a_dir / name).read_bytes() == (b_dir / name).read_bytes(), (
-                f"non-deterministic artefact: {name}"
-            )
+        assert (a_dir / "dag.json").read_bytes() == (b_dir / "dag.json").read_bytes()
+
+    def test_excel_sheet_values_identical(self, two_runs) -> None:
+        """L11 / Section 12.2 — every data sheet's dataframe must be equal
+        across re-runs. The workbook *bytes* aren't stable (openpyxl embeds
+        a build timestamp), but every cell value is reproducible.
+
+        The `summary` sheet is excluded because it includes the per-run
+        `run_id` (the wall-clock minute when the run started) — which
+        legitimately differs across runs by design.
+        """
+        from V1.reports import writer_excel
+        a_dir, b_dir = two_runs
+        a_path = a_dir / "btp_schedule.xlsx"
+        b_path = b_dir / "btp_schedule.xlsx"
+        for sheet in writer_excel.SHEET_NAMES:
+            if sheet == "summary":
+                continue  # carries run_id metadata; legitimately varies
+            a_df = writer_excel.read_sheet(a_path, sheet)
+            b_df = writer_excel.read_sheet(b_path, sheet)
+            assert a_df.equals(b_df), f"sheet {sheet!r} differs across runs"
 
     def test_gt_lots_scheduled_in_full_path(self, two_runs) -> None:
         """With BD Fillering proc_time provided, GT lots schedule normally."""
+        from V1.reports import writer_excel
         a_dir, _ = two_runs
-        sched = pd.read_csv(a_dir / "schedule.csv")
+        sched = writer_excel.read_sheet(a_dir / "btp_schedule.xlsx", "schedule")
         gt_rows = sched[sched["item_code"] == "GT2056516TAXIMXTL"]
         assert len(gt_rows) > 0
 
     def test_no_machine_double_booking(self, two_runs) -> None:
+        from V1.reports import writer_excel
         a_dir, _ = two_runs
-        sched = pd.read_csv(a_dir / "schedule.csv")
+        sched = writer_excel.read_sheet(a_dir / "btp_schedule.xlsx", "schedule")
         for m, grp in sched.groupby("machine_id"):
             grp = grp.sort_values("start_min")
             ends = grp["end_min"].values
@@ -187,8 +201,9 @@ class TestFullPath:
             )
 
     def test_kpi_otif_reported(self, two_runs) -> None:
+        from V1.reports import writer_excel
         a_dir, _ = two_runs
-        kpi = pd.read_csv(a_dir / "kpi.csv")
+        kpi = writer_excel.read_sheet(a_dir / "btp_schedule.xlsx", "kpi")
         otif_row = kpi[kpi["metric"] == "otif_pct"]
         assert len(otif_row) == 1
         otif_val = float(otif_row.iloc[0]["value"])

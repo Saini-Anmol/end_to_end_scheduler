@@ -30,10 +30,7 @@ from V1.config.settings import Settings
 from V1.reports import (
     writer_audit,
     writer_dag,
-    writer_diagnostics,
     writer_excel,
-    writer_kpi,
-    writer_reservation_log,
 )
 from V1.routes import (
     audit,
@@ -67,7 +64,9 @@ def run(
 
     # 1. Audit
     audit_result = audit.run(ctx.input_dir, ctx.settings)
-    writer_audit.write(audit_result, ctx.output_dir)
+    # Skip the legacy routing_cleaned.csv standalone file — the bundled
+    # btp_schedule.xlsx carries the same data on the `routing_cleaned` sheet.
+    writer_audit.write(audit_result, ctx.output_dir, write_routing_csv=False)
 
     if audit_result.halt_findings:
         first = audit_result.halt_findings[0]
@@ -151,11 +150,13 @@ def run(
     )
     print(f"[forward_scheduler] {len(sched.scheduled)} scheduled, "
           f"{len(sched.infeasibilities)} infeasibilities", flush=True)
-    writer_reservation_log.write(sched, ctx.output_dir)
+    # Reservation log is materialised as a sheet inside btp_schedule.xlsx;
+    # no standalone CSV is emitted.
 
     # 10. Diagnostics
     diag = diagnostics.run(sched, demand, norm, ctx.settings)
-    writer_diagnostics.write(diag, sched, ctx.output_dir)
+    # aging_violations + building_to_curing + infeasibilities ship as sheets
+    # in btp_schedule.xlsx — no standalone CSVs.
     print(
         f"[diagnostics] aging_violations={len(diag.aging_violations)}, "
         f"building_to_curing={len(diag.building_to_curing)}",
@@ -164,7 +165,7 @@ def run(
 
     # 11. KPI
     kpi_result = kpi.run(sched, diag, lots)
-    writer_kpi.write(kpi_result, ctx.output_dir)
+    # KPI table lives on the `kpi` sheet of btp_schedule.xlsx; no kpi.csv.
     print(
         f"[kpi] OTIF={kpi_result.otif_pct:.1f}%, "
         f"processing={kpi_result.total_processing_min}min, "
@@ -174,8 +175,7 @@ def run(
 
     # 12. Visualisation
     visualisation.run(sched, demand, bom, norm.t0, ctx.output_dir)
-    print("[viz] bom_graph.svg + schedule.csv + machine_view.csv + gantt_*.html",
-          flush=True)
+    print("[viz] bom_graph.svg + gantt_*.html", flush=True)
 
     # 13. Bundled Excel workbook — single file containing every tabular sheet.
     workbook_path = writer_excel.write_full(

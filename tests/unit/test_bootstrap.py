@@ -17,12 +17,15 @@ def test_bootstrap_halts_on_bd_fillering(
     code = bootstrap.run(settings, input_dir=nulled_input_dir,
                           output_root=tmp_output_root)
     assert code == int(HaltCode.AUDIT_NULL_PROC_TIME) == 10
-    # Audit artefacts exist; schedule.csv does not.
+    # Audit artefacts exist; downstream files do not.
     runs = list(tmp_output_root.iterdir())
     assert len(runs) == 1
     out = runs[0]
     assert (out / "audit_report.md").exists()
-    assert (out / "routing_cleaned.csv").exists()
+    # The HALT path bundles the routing-cleaned table into btp_schedule.xlsx;
+    # no standalone CSV is emitted by the pipeline.
+    assert (out / "btp_schedule.xlsx").exists()
+    assert not (out / "routing_cleaned.csv").exists()
     assert not (out / "schedule.csv").exists()
 
 

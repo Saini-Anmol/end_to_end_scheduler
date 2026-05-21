@@ -78,3 +78,54 @@ but the design is intentional for V1 simplicity.
 Diamond BOM items (CPJ1218, EHT1000 each have 2 parents) do NOT cause duplicate
 block_ids in serves_blocks. `explode_block()` uses a dict so each item_code appears
 once per block with accumulated qty. Verified by runtime check 2026-05-21.
+
+---
+
+## Review session: 2026-05-21 (pass 2 — fix verification)
+
+### FIXED — Building duration formula (was Critical Issue 1)
+`time_calculation.py` path C correctly uses `proc_time=60 SEC, cycle_size=2`:
+`ceil(ceil(64/2) * ceil(60/60) / 0.95) = ceil(32/0.95) = 34 min` for 64-tyre lot.
+Matches routing_cleaned.csv and schedule.csv. No batch_size confusion.
+Status: FIXED as of 2026-05-21 run.
+
+### FIXED — Aging violations detected (was Critical Issue 2)
+`diagnostics.py` walks all consumer-producer pairs via `s.producer_lot_ids`,
+computes `gap = start_min - producer.end_min`, flags `< mn` or `> mx` correctly.
+aging_violations.csv has 4 rows in latest run, spot-checked manually: CORRECT.
+Status: FIXED as of 2026-05-21 run.
+
+### FIXED — Building lots not aggregated (was High Issue 3)
+`lot_sizing.py` `_build_gt_lots()` explicitly creates one lot per curing row (L1).
+All 39 committed building lots have `serves_blocks` length = 1.
+Status: FIXED. (3 infeasible lots correctly routed to infeasibilities.csv, not schedule.)
+
+### PARTIALLY FIXED — Missing block b42 (was High Issue 4)
+b41 is now present. b42 was the previously missing block — confirmed fixed.
+BUT: blocks b15, b22, b29 are absent from `building_to_curing.csv` (only 39/42 rows)
+because diagnostics.py only walks `schedule.scheduled` and skips infeasible lots.
+Infeasible building lots should still have a row in building_to_curing.csv with
+classification=INFEASIBLE. diagnostics.py has no code path for this.
+**Residual defect: building_to_curing.csv missing 3 rows for infeasible blocks.**
+
+### FIXED — on_time_flag missing (was Medium Issue 5)
+`writer_schedule.py:33` writes `on_time_flag: s.on_time_flag`. Column present in
+schedule.csv with 545 True / 19 False. Logic set in forward_scheduler.py:443-456.
+Status: FIXED.
+
+### FIXED — B460 aging unit normalization (was Medium Issue 6)
+`unit_conversion.py` `_AGING_UNIT_MULT_MIN` has 'hours':60, 'days':1440, 'min':1.
+`aging_to_minutes(4, 'Hours')=240`, `aging_to_minutes(4, 'Days')=5760`. CORRECT.
+AGING_MIXED_UNITS Warn fires in audit (758 items including B460). Note: B460 is not
+named individually in report (listed in 'first 10' items - B460 is not one of them).
+Status: FIXED (normalization correct, Warn fires, first-10 sample is cosmetic).
+
+### NOT FIXED — Dead production unreported (was Medium Issue 7)
+21 lots in schedule.csv exclusively serve infeasible blocks (b15, b22, b29) —
+these are dead production never consumed by any committed building lot.
+kpi.csv has no orphaned_lots metric. No check in demand_explosion or lot_sizing
+prevents sizing upstream lots for blocks whose building lot will be infeasible.
+This is a systemic issue: the engine should either (a) not size upstream lots for
+infeasible building blocks OR (b) report orphaned lots in kpi.csv.
+Example dead lots: EHT1000__40__0015, CPJ1218__50__0015 (serve only b15).
+**Residual defect: 21 dead production lots, none flagged in KPI or infeasibilities.**

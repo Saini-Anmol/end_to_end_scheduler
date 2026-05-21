@@ -43,13 +43,21 @@ def _section(title: str, findings: list[AuditFinding]) -> str:
     return "\n".join(out)
 
 
-def write(result: AuditResult, output_dir: Path) -> None:
-    """Write audit_report.md and routing_cleaned.csv into `output_dir`.
+def write(
+    result: AuditResult,
+    output_dir: Path,
+    write_routing_csv: bool = True,
+) -> None:
+    """Write audit_report.md (always) and routing_cleaned.csv (opt-in).
 
-    `output_dir` is expected to already exist (created by run_context).
+    `output_dir` is expected to already exist (created by run_context). The
+    pipeline orchestrator passes `write_routing_csv=False` because the same
+    table lives as a sheet in `btp_schedule.xlsx`; unit tests of the writer
+    leave the default `True` so the legacy artefact still appears.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    _write_routing_cleaned(result, output_dir / "routing_cleaned.csv")
+    if write_routing_csv:
+        _write_routing_cleaned(result, output_dir / "routing_cleaned.csv")
     _write_audit_report(result, output_dir / "audit_report.md")
 
 

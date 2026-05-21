@@ -33,14 +33,16 @@ def viz_inputs(input_dir: Path, settings: Settings):
     return sched, demand, bom, norm.t0
 
 
-def test_writes_bom_svg_and_schedule_csvs(
+def test_writes_bom_svg(
     viz_inputs, tmp_path: Path
 ) -> None:
     sched, demand, bom, t0 = viz_inputs
     paths = visualisation.run(sched, demand, bom, t0, tmp_path)
     assert (tmp_path / "bom_graph.svg").exists()
-    assert (tmp_path / "schedule.csv").exists()
-    assert (tmp_path / "machine_view.csv").exists()
+    # The lot-level schedule + machine view live as sheets in
+    # btp_schedule.xlsx now; visualisation.run no longer emits them.
+    assert not (tmp_path / "schedule.csv").exists()
+    assert not (tmp_path / "machine_view.csv").exists()
     # SVG sanity-check: should have non-trivial size and contain '<svg'.
     body = (tmp_path / "bom_graph.svg").read_text()
     assert "<svg" in body
