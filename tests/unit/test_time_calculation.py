@@ -54,11 +54,13 @@ class TestShape:
             d = durations.for_lot(lot.lot_id)
             assert len(d) > 0
 
-    def test_durations_are_positive_ints(self, durations) -> None:
+    def test_durations_are_non_negative_ints(self, durations) -> None:
+        """Durations are integer minutes ≥ 0. Zero-tyre placeholder GT lots
+        (b00 11-min pre-shift slot) carry duration 0."""
         for per_machine in durations.durations.values():
             for dur in per_machine.values():
                 assert isinstance(dur, int)
-                assert dur > 0
+                assert dur >= 0
 
 
 class TestSecPerBatch:
@@ -115,11 +117,15 @@ class TestMperMin:
 
 
 class TestEfficiency:
-    def test_all_durations_at_least_nominal(self, durations) -> None:
-        # Effective is always >= nominal (efficiency < 1 lengthens duration).
-        for per_machine in durations.durations.values():
+    def test_all_positive_qty_durations_at_least_one(self, durations, lots) -> None:
+        """Effective is always ≥ nominal (efficiency < 1 lengthens duration).
+        Zero-qty placeholder lots get duration 0 and are excluded."""
+        nonzero_lots = {l.lot_id for l in lots.lots if l.qty > 0}
+        for lot_id, per_machine in durations.durations.items():
+            if lot_id not in nonzero_lots:
+                continue
             for dur in per_machine.values():
-                assert dur >= 1  # ceil(x/0.95) >= 1 for any positive nominal
+                assert dur >= 1
 
 
 class TestDeterminism:

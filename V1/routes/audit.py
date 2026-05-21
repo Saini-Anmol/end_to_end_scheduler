@@ -34,7 +34,15 @@ _ITEMTYPE_SHEET = "ItemType Master"
 _MPQ_SHEET = "MPQ"
 _BUFFER_SHEET = "Buffer Master"
 
-_KNOWN_AGING_UNITS: frozenset[str] = frozenset(u.value for u in AgingUnit)
+# Accepted aging-unit aliases (case-insensitive at check time).  Kept in sync
+# with V1.utilities.unit_conversion._AGING_UNIT_MULT_MIN — every alias that
+# the normaliser accepts is also "known" here, so we don't surface a noisy
+# AGING_UNKNOWN_UNIT warning for a value that actually converts correctly.
+_KNOWN_AGING_UNITS: frozenset[str] = frozenset({
+    "Days", "Day",
+    "Hours", "Hour", "Hr", "Hrs",
+    "Minutes", "Minute", "Min",
+})
 
 # Mojibake → correct unicode (UTF-8 bytes c2 b0 misread as Latin-1 yields 'Â°').
 # Observed on BOM row 10: 'CPJ1218-162MM/29Â°' should be 'CPJ1218-162MM/29°'.
@@ -249,14 +257,16 @@ def _check_mixed_unit_aging(aging: pd.DataFrame, findings: list[AuditFinding]) -
 
 
 def _check_unknown_aging_units(aging: pd.DataFrame, findings: list[AuditFinding]) -> None:
-    """Unknown aging unit string — neither Days, Hours, nor Minutes.
+    """Unknown aging unit string — not in the normaliser's accepted alias set.
 
-    Aggregated to one Warn per unknown-unit value.
+    Aggregated to one Warn per unknown-unit value. Case-insensitive match
+    against the alias set so 'Min', 'Hr', etc. are recognised.
     """
+    known_lower = {u.lower() for u in _KNOWN_AGING_UNITS}
     bad_units: dict[str, set[str]] = {}
     for col in ("MinAgingUnit", "MaxAgingUnit"):
         for unit_val in aging[col].dropna().unique():
-            if str(unit_val) in _KNOWN_AGING_UNITS:
+            if str(unit_val).strip().lower() in known_lower:
                 continue
             items = sorted({str(x) for x in aging.loc[aging[col] == unit_val, "ItemCode"]})
             bad_units.setdefault(str(unit_val), set()).update(items)

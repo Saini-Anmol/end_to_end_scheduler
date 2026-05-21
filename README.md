@@ -119,6 +119,7 @@ Every run creates a fresh dated folder `output/<HHMM-DD-MM-YYYY>/`. Folders are 
 | `dag.json` | Machine-readable lot dependency graph — nodes + edges with aging windows and effective-gap minutes. |
 | `bom_graph.svg` | Static BOM tree viz. Capstrip subtree appears tagged "OUT-OF-SCOPE — awaiting data". |
 | `gantt_<block>.html` | Plotly Gantt for three sample blocks — earliest, middle, latest in the horizon. |
+| **`btp_schedule.xlsx`** | **Bundled workbook — single file with one sheet per tabular artefact (`summary`, `kpi`, `schedule`, `machine_view`, `building_to_curing`, `aging_violations`, `infeasibilities`, `reservation_log`, `routing_cleaned`, `audit_halt`, `audit_warn`). The headline artefact the planner opens.** On HALT runs, a slimmed-down version is written with `summary`, `audit_halt`, `audit_warn`, and `routing_cleaned` only. |
 
 **HALT runs** skip `schedule.csv` and every downstream artefact. `audit_report.md` and `routing_cleaned.csv` are always written.
 
@@ -161,8 +162,18 @@ pilot:
   total_demand_tyres: 2620
 
 t0:
-  default: "2026-05-01 07:00"
+  auto: true                       # L17 — data-driven anchor (default)
+  safety_buffer_min: 60            # extra minutes added between earliest-feasible-start and curing
+  default: "2026-05-01 07:00"      # fallback when auto: false
   guardrail_assertion: true        # L17 — HALT if t0 + longest MIN-aging path > first curing start
+
+# Auto-t0 (L17, implemented):
+#   t0 = first_curing_start − critical_path − safety_buffer_min
+#   where `critical_path` is the longest sum of (per-item duration + min_aging)
+#   along any leaf → SKU walk through the BOM. Per-item duration is estimated
+#   from routing using the same UOM rules as time_calculation, applied to
+#   one curing block's worth of demand (64 tyres × per-tyre BOM walk).
+#   Switching to `auto: false` uses the literal `default` instead.
 
 efficiency:
   factor: 0.95                     # L10 / L20

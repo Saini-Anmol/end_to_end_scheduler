@@ -55,12 +55,17 @@ def diag(schedule, demand, norm, settings) -> DiagnosticsResult:
 
 
 class TestAgingViolations:
-    def test_no_min_aging_violations_after_forward_pass(self, diag) -> None:
-        """The forward scheduler enforces MIN aging on each pick; diagnostics
-        should not find any MIN violations on committed lots."""
-        min_violations = [v for v in diag.aging_violations
-                          if v.violation_type == "MIN"]
-        assert min_violations == []
+    def test_in_graph_min_aging_violations_only_on_curing_edge(self, diag) -> None:
+        """The forward scheduler enforces MIN aging on every in-graph pick.
+        The only MIN violations diagnostics may surface are on the synthetic
+        Building→Curing edge (where the curing block start is fixed input
+        and Building couldn't finish in time)."""
+        for v in diag.aging_violations:
+            if v.violation_type != "MIN":
+                continue
+            assert v.consumer_lot_id.startswith("CURING__"), (
+                f"unexpected in-graph MIN violation: {v}"
+            )
 
     def test_violation_records_are_consistent(self, diag) -> None:
         for v in diag.aging_violations:

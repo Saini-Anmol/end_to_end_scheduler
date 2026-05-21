@@ -296,6 +296,50 @@ def _enforce_min_qty_or_halt(
 
 # --- public entry ----------------------------------------------------------
 
+def _build_gt_lots(
+    norm: NormalisedResult, settings: Settings,
+) -> list[Lot]:
+    """L1 — one Building lot per curing row.
+
+    The Green Tyre is NEVER aggregated across curing blocks (per CLAUDE.md L1:
+    "Per-block, one Building lot per curing row"). Every row in `curing_df`
+    yields one Lot, including the zero-tyre pre-shift placeholder (b00) so
+    `building_to_curing.csv` carries 42 rows for the pilot.
+    """
+    gt = settings.green_tyre_code
+    routing_row = _routing_row(norm.routing_df, gt)
+    if routing_row is None:
+        return []
+    op_seq = int(routing_row["operation_seq"])
+
+    # ItemType for GT — look up in itemtype_df.
+    it_rows = norm.audit.itemtype_df[
+        norm.audit.itemtype_df["ItemCode"].astype(str) == gt
+    ]
+    item_type = str(it_rows.iloc[0]["ItemType"]) if len(it_rows) else "Green Tyres"
+
+    lots: list[Lot] = []
+    curing = norm.curing_df.reset_index(drop=True)
+    for idx, row in curing.iterrows():
+        block_id = f"b{int(idx):02d}"
+        qty = float(row["Qty"])
+        lots.append(Lot(
+            lot_id=make_lot_id(gt, op_seq, int(idx) + 1),
+            item_code=gt,
+            op_seq=op_seq,
+            item_type=item_type,
+            qty=qty,
+            uom="NOS",
+            serves_blocks=[block_id],
+            earliest_block_id=block_id,
+            latest_block_id=block_id,
+            bom_output_qty=1.0,
+            bom_output_uom="NOS",
+            qty_by_block={block_id: qty},
+        ))
+    return lots
+
+
 def run(
     norm: NormalisedResult,
     demand: DemandResult,
@@ -306,15 +350,26 @@ def run(
     curing_starts: dict[str, int] = {}
     for d in demand.block_demands:
         curing_starts[d.block_id] = d.curing_start_min
+    # Also include zero-qty placeholder rows from curing_df (b00 doesn't
+    # appear in demand because of zero-tyre filtering).
+    for idx, row in norm.curing_df.reset_index(drop=True).iterrows():
+        bid = f"b{int(idx):02d}"
+        curing_starts.setdefault(bid, int(row["start_min"]))
 
     lots: list[Lot] = []
     all_warnings: list[str] = []
+
+    # Green Tyre — per-curing-row lots (L1). Built directly from curing_df.
+    lots.extend(_build_gt_lots(norm, settings))
 
     for item in sorted(demand.item_demands.keys()):
         item_demand = demand.item_demands[item]
         if item == settings.sku_code:
             # L4.5 — curing is the demand event and a fixed input. We don't
             # lot-size the SKU; the published curing schedule defines it.
+            continue
+        if item == settings.green_tyre_code:
+            # Already handled by _build_gt_lots above (L1).
             continue
         routing_row = _routing_row(norm.routing_df, item)
         if routing_row is None:

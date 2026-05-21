@@ -17,8 +17,10 @@ from V1.routes import audit
 
 
 @pytest.fixture(scope="module")
-def result(input_dir: Path, settings: Settings) -> audit.AuditResult:
-    return audit.run(input_dir, settings)
+def result(nulled_input_dir: Path, settings: Settings) -> audit.AuditResult:
+    """Pilot inputs with BD Fillering proc_time nulled so the HALT case
+    fires regardless of the live input's current state."""
+    return audit.run(nulled_input_dir, settings)
 
 
 class TestPilotScope:

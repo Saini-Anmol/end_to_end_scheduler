@@ -52,11 +52,16 @@ class TestShape:
 
 
 class TestDeadlines:
-    def test_deadline_strictly_before_earliest_curing(
-        self, feas: FeasibilityResult, lots: LotsResult, demand
+    def test_deadline_at_or_before_earliest_curing(
+        self, feas: FeasibilityResult, lots: LotsResult, demand,
+        norm,
     ) -> None:
-        """latest_end_min ≤ earliest_curing_start_min − chain_min_aging."""
+        """latest_end_min == earliest_curing_start − chain_min_aging.
+        For GT lots (one per curing row, including zero-qty b00) where
+        chain_min_aging = 0, the deadline equals curing_start."""
         starts = {d.block_id: d.curing_start_min for d in demand.block_demands}
+        for idx, row in norm.curing_df.reset_index(drop=True).iterrows():
+            starts.setdefault(f"b{int(idx):02d}", int(row["start_min"]))
         lots_by_id = {l.lot_id: l for l in lots.lots}
         for f in feas.feasibilities:
             lot = lots_by_id[f.lot_id]

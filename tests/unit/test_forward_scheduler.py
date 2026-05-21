@@ -20,8 +20,10 @@ from V1.utilities.unit_conversion import normalise
 
 
 @pytest.fixture(scope="module")
-def norm(input_dir: Path, settings: Settings):
-    return normalise(audit.run(input_dir, settings), settings)
+def norm(nulled_input_dir: Path, settings: Settings):
+    """Use the nulled fixture so the BD-cascade infeasibility tests fire
+    deterministically regardless of live input file state."""
+    return normalise(audit.run(nulled_input_dir, settings), settings)
 
 
 @pytest.fixture(scope="module")
@@ -64,10 +66,15 @@ class TestShape:
         for s in schedule.scheduled:
             assert isinstance(s.machine_id, str)
 
-    def test_end_strictly_after_start(self, schedule: ScheduleResult) -> None:
+    def test_end_consistent_with_duration(
+        self, schedule: ScheduleResult
+    ) -> None:
+        """end = start + duration. Zero-qty placeholders are allowed
+        start == end (duration 0)."""
         for s in schedule.scheduled:
             assert s.end_min == s.start_min + s.duration_min
-            assert s.end_min > s.start_min
+            if s.qty > 0:
+                assert s.end_min > s.start_min
 
 
 class TestMachineCapacity:

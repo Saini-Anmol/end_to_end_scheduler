@@ -32,6 +32,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable
 
+import bisect
+
 import networkx as nx
 import pandas as pd
 
@@ -85,6 +87,131 @@ def _is_building_lot(lot, settings: Settings) -> bool:
     return lot.item_code == settings.green_tyre_code
 
 
+def _find_earliest_slot(
+    intervals: list[tuple[int, int]], duration: int, lower_bound: int,
+) -> int:
+    """Find the earliest start time ≥ `lower_bound` where a lot of `duration`
+    minutes fits between existing intervals on the machine.
+
+    `intervals` is sorted by start ascending and is non-overlapping. Walks
+    gaps left-to-right; returns the first start that satisfies the bound
+    and avoids overlap. If no gap fits, returns the time after the last
+    committed lot.
+    """
+    cursor = lower_bound
+    for s, e in intervals:
+        if e <= cursor:
+            continue  # interval entirely in the past
+        if s >= cursor + duration:
+            return cursor
+        cursor = max(cursor, e)
+    return cursor
+
+
+def _insert_interval(
+    intervals: list[tuple[int, int]], start: int, end: int,
+) -> None:
+    """Insert (start, end) into sorted intervals list."""
+    bisect.insort(intervals, (start, end))
+
+
+def _aging_min_lookup(aging_df: pd.DataFrame) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for _, row in aging_df.iterrows():
+        if pd.notna(row.get("min_aging_min")):
+            out[str(row["ItemCode"])] = int(row["min_aging_min"])
+    return out
+
+
+def _aging_max_lookup(aging_df: pd.DataFrame) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for _, row in aging_df.iterrows():
+        if pd.notna(row.get("max_aging_min")):
+            out[str(row["ItemCode"])] = int(row["max_aging_min"])
+    return out
+
+
+def _compute_target_ends(
+    lots_by_item: dict[str, list],
+    durations,
+    bom: BomGraph,
+    norm: NormalisedResult,
+    settings: Settings,
+    block_curing_start: dict[str, int],
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Compute per-lot target_end_ceiling and target_end_floor.
+
+    For each producer lot feeding consumer lot(s):
+      - ceiling: end ≤ MIN(consumer.target_start − own_item.min_aging)
+                 (aging-MIN must hold for every consumer)
+      - floor:   end ≥ MAX(consumer.target_start − own_item.max_aging)
+                 (aging-MAX — producer must NOT have expired by then)
+
+    GT lots are tied to a specific curing block:
+      ceiling = curing_start − GT.min_aging
+      floor   = curing_start − GT.max_aging
+
+    Walks items PARENTS-FIRST (consumers first in our edge convention) so
+    each producer's consumers already have target_ends set when it's visited.
+
+    Returns (ceilings, floors). Forward dispatch uses `floor − duration` as
+    the target_start (earliest viable start that satisfies aging-MAX), and
+    checks the final `actual_end ≤ ceiling` for on_time_flag.
+    """
+    ceilings: dict[str, int] = {}
+    floors: dict[str, int] = {}
+    aging_min_by_item = _aging_min_lookup(norm.aging_df)
+    aging_max_by_item = _aging_max_lookup(norm.aging_df)
+    gt_min_aging = aging_min_by_item.get(settings.green_tyre_code, 0)
+    gt_max_aging = aging_max_by_item.get(settings.green_tyre_code, 10 ** 9)
+    gt = settings.green_tyre_code
+
+    item_order = list(reversed(bom.topological_order(exclude_capstrip=True)))
+    if gt in lots_by_item and gt not in item_order:
+        item_order.insert(0, gt)
+
+    def _lot_duration(lot_id: str) -> int:
+        d = durations.for_lot(lot_id)
+        if not d:
+            return 0
+        return next(iter(d.values()))
+
+    for item in item_order:
+        if item == settings.sku_code or item not in lots_by_item:
+            continue
+        for lot in lots_by_item[item]:
+            if item == gt:
+                block_id = lot.serves_blocks[0] if lot.serves_blocks else None
+                if block_id is None:
+                    continue
+                cur_start = block_curing_start.get(block_id)
+                if cur_start is None:
+                    continue
+                ceilings[lot.lot_id] = int(cur_start - gt_min_aging)
+                floors[lot.lot_id] = int(cur_start - gt_max_aging)
+                continue
+
+            this_min_aging = aging_min_by_item.get(item, 0)
+            this_max_aging = aging_max_by_item.get(item, 10 ** 9)
+            ceiling_candidates: list[int] = []
+            floor_candidates: list[int] = []
+            for parent_item in bom.parents(item, exclude_capstrip=True):
+                for parent_lot in lots_by_item.get(parent_item, []):
+                    p_te = ceilings.get(parent_lot.lot_id)
+                    if p_te is None:
+                        continue
+                    if set(parent_lot.serves_blocks).isdisjoint(lot.serves_blocks):
+                        continue
+                    p_dur = _lot_duration(parent_lot.lot_id)
+                    p_ts = p_te - p_dur
+                    ceiling_candidates.append(p_ts - this_min_aging)
+                    floor_candidates.append(p_ts - this_max_aging)
+            if ceiling_candidates:
+                ceilings[lot.lot_id] = min(ceiling_candidates)
+                floors[lot.lot_id] = max(floor_candidates)
+    return ceilings, floors
+
+
 def run(
     lots: LotsResult,
     demand: DemandResult,
@@ -112,12 +239,33 @@ def run(
     item_order = bom.topological_order(exclude_capstrip=True)
     # Filter to items that have lots in this run.
     item_order = [it for it in item_order if it in lots_by_item]
+    # GT may not appear in demand if it was added externally by lot_sizing.
+    # Append GT explicitly at the end so it's processed after all components.
+    if settings.green_tyre_code in lots_by_item and settings.green_tyre_code not in item_order:
+        item_order.append(settings.green_tyre_code)
 
-    # Machine availability: machine_id → earliest free minute. Default 0 (t0).
-    machine_free: dict[str, int] = {}
+    # block_id → curing_start_min — built from BOTH demand and curing_df so
+    # zero-qty placeholder blocks (b00) are also addressable.
+    block_curing_start: dict[str, int] = {
+        d.block_id: d.curing_start_min for d in demand.block_demands
+    }
+    for idx, row in norm.curing_df.reset_index(drop=True).iterrows():
+        bid = f"b{int(idx):02d}"
+        block_curing_start.setdefault(bid, int(row["start_min"]))
+
+    # Per-machine committed intervals — gap-aware so later-dispatched lots
+    # with earlier target_starts can back-fill gaps left by earlier ones.
+    machine_intervals: dict[str, list[tuple[int, int]]] = {}
     for ms in eligibility_idx.values():
         for m in ms:
-            machine_free.setdefault(m, 0)
+            machine_intervals.setdefault(m, [])
+
+    # Pre-compute target ceilings + floors per lot via CPM backward pass.
+    # Ceiling = latest end honouring aging-MIN of every consumer.
+    # Floor   = earliest end honouring aging-MAX of every consumer.
+    target_ceilings, target_floors = _compute_target_ends(
+        lots_by_item, durations, bom, norm, settings, block_curing_start
+    )
 
     # Committed lot info: lot_id → ScheduledLot
     committed: dict[str, ScheduledLot] = {}
@@ -131,6 +279,28 @@ def run(
 
     for item in item_order:
         for lot in lots_by_item[item]:
+            # Zero-qty placeholder GT lots (b00 — pre-shift slot with 0 tyres)
+            # are tracked for traceability per L1 but produce nothing. Place
+            # them at curing_start_min with duration 0; no producer matching.
+            if lot.qty == 0:
+                bid = lot.serves_blocks[0] if lot.serves_blocks else None
+                cstart = block_curing_start.get(bid, 0) if bid else 0
+                # Placeholder lots consume no machine time → mark with "—" so
+                # they don't appear to collide with real lots on the
+                # configured Building primary.
+                placeholder = ScheduledLot(
+                    lot_id=lot.lot_id, item_code=lot.item_code,
+                    item_type=lot.item_type, op_seq=lot.op_seq,
+                    machine_id="—",
+                    start_min=cstart, end_min=cstart, duration_min=0,
+                    qty=0.0, uom=lot.uom,
+                    serves_blocks=list(lot.serves_blocks),
+                    on_time_flag=True,
+                )
+                scheduled.append(placeholder)
+                committed[lot.lot_id] = placeholder
+                continue
+
             # 1. Find producer for each BOM-child ingredient
             ingredients = bom.children(item, exclude_capstrip=True)
             producer_picks: dict[str, ScheduledLot] = {}
@@ -230,20 +400,33 @@ def run(
                 else:
                     ordered_machines = sorted(machines)
             else:
-                # Among eligible, pick lowest free_from with lot_id tiebreak.
-                ordered_machines = sorted(
-                    machines, key=lambda m: (machine_free.get(m, 0), m)
-                )
+                ordered_machines = sorted(machines)
 
-            # Pick the first machine that yields the earliest feasible end.
+            # Placement window: [floor, ceiling] from the CPM backward pass.
+            # We delay each lot until its FLOOR (earliest aging-MAX-safe start)
+            # so it doesn't run too early and age out before its consumers.
+            # The ceiling is the on-time deadline (aging-MIN); breaches set
+            # on_time_flag=False per L11 but still commit.
+            feas = feasibility_by_lot.get(lot.lot_id)
+            ceiling = target_ceilings.get(lot.lot_id)
+            if ceiling is None and feas is not None:
+                ceiling = feas.latest_acceptable_end_min
+            floor = target_floors.get(lot.lot_id, 0)
             best: tuple[str, int, int, int] | None = None
             duration_map = durations.for_lot(lot.lot_id)
             for m in ordered_machines:
                 if m not in duration_map:
                     continue
-                free_from = machine_free.get(m, 0)
-                actual_start = max(earliest_start, free_from)
                 duration = duration_map[m]
+                if duration == 0:
+                    actual_start = max(earliest_start, floor)
+                else:
+                    lower_bound = earliest_start
+                    if floor > 0:
+                        lower_bound = max(lower_bound, floor - duration)
+                    actual_start = _find_earliest_slot(
+                        machine_intervals[m], duration, lower_bound
+                    )
                 actual_end = actual_start + duration
                 if best is None or (actual_end, m) < (best[3], best[0]):
                     best = (m, actual_start, duration, actual_end)
@@ -256,18 +439,12 @@ def run(
                 continue
             machine_id, actual_start, duration, actual_end = best
 
-            # 3. Feasibility check vs backward deadline.
-            feas = feasibility_by_lot.get(lot.lot_id)
-            if feas is not None and actual_end > feas.latest_acceptable_end_min:
-                infeasibilities.append(InfeasibilityRecord(
-                    lot_id=lot.lot_id, item_code=item, op_seq=lot.op_seq,
-                    binding_constraint="DEADLINE",
-                    message=(
-                        f"actual_end={actual_end} exceeds "
-                        f"latest_acceptable_end_min={feas.latest_acceptable_end_min}"
-                    )
-                ))
-                continue
+            # 3. On-time check vs ceiling (aging-MIN deadline). Per L11 —
+            # flag and continue: commit the lot but set on_time_flag=False
+            # so the planner sees the breach in schedule.csv + diagnostics.
+            on_time = True
+            if ceiling is not None and actual_end > ceiling:
+                on_time = False
 
             # 4. Commit.
             sched = ScheduledLot(
@@ -276,11 +453,14 @@ def run(
                 start_min=actual_start, end_min=actual_end,
                 duration_min=duration, qty=lot.qty, uom=lot.uom,
                 serves_blocks=list(lot.serves_blocks),
+                on_time_flag=on_time,
                 producer_lot_ids={ing: p.lot_id for ing, p in producer_picks.items()},
             )
             scheduled.append(sched)
             committed[lot.lot_id] = sched
-            machine_free[machine_id] = actual_end
+            if duration > 0:
+                _insert_interval(machine_intervals[machine_id],
+                                 actual_start, actual_end)
 
             # 5. Reservation log (created + consumed at commit instant for V1).
             for ing, prod in producer_picks.items():

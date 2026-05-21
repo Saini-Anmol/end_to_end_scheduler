@@ -23,6 +23,9 @@ class ScheduledLot:
     qty: float
     uom: str
     serves_blocks: list[str]
+    # True iff actual_end ≤ latest_acceptable_end_min from backward feasibility.
+    # Zero-qty placeholder lots are flagged True (trivially on-time).
+    on_time_flag: bool = True
     # Picked producer for each ingredient (item_code → producer lot_id).
     # Empty for items whose ingredients are all raws / work-away.
     producer_lot_ids: dict[str, str] = field(default_factory=dict)

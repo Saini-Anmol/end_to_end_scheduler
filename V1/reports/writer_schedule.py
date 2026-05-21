@@ -30,6 +30,7 @@ def _to_records(result: ScheduleResult, t0: datetime) -> list[dict]:
             "qty": s.qty,
             "uom": s.uom,
             "serves_blocks": "|".join(s.serves_blocks),
+            "on_time_flag": s.on_time_flag,
             "start_dt": from_minute(s.start_min, t0).isoformat(sep=" "),
             "end_dt": from_minute(s.end_min, t0).isoformat(sep=" "),
         })

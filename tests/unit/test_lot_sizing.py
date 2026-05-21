@@ -64,9 +64,17 @@ class TestShape:
             assert parts[1] == str(lot.op_seq)
             assert len(parts[2]) == 4 and parts[2].isdigit()
 
-    def test_lot_qty_positive(self, lots: LotsResult) -> None:
+    def test_lot_qty_positive_except_zero_block_placeholder(
+        self, lots: LotsResult, settings
+    ) -> None:
+        """Per L1, GT lots are one-per-curing-row including the b00 zero-tyre
+        placeholder. Every other lot must have qty > 0."""
         for lot in lots.lots:
-            assert lot.qty > 0
+            if (lot.item_code == settings.green_tyre_code
+                    and lot.serves_blocks == ["b00"]):
+                assert lot.qty == 0
+            else:
+                assert lot.qty > 0
 
     def test_serves_blocks_chronological_within_lot(
         self, lots: LotsResult
@@ -128,10 +136,15 @@ class TestMPQ:
 
 class TestAgingSpan:
     def test_lot_curing_span_within_aging_window(
-        self, lots: LotsResult, demand: DemandResult, norm: NormalisedResult
+        self, lots: LotsResult, demand: DemandResult,
+        norm: NormalisedResult, settings,
     ) -> None:
-        """For every lot, latest_curing - earliest_curing ≤ aging_max - aging_min."""
+        """For every aggregated lot, latest_curing − earliest_curing ≤
+        aging_max − aging_min. GT lots are per-curing-row (single block) so
+        their span is 0 by construction."""
         starts = {d.block_id: d.curing_start_min for d in demand.block_demands}
+        for idx, row in norm.curing_df.reset_index(drop=True).iterrows():
+            starts.setdefault(f"b{int(idx):02d}", int(row["start_min"]))
         aging_by_item: dict[str, tuple[float, float]] = {}
         for _, row in norm.aging_df.iterrows():
             if pd.notna(row["min_aging_min"]) and pd.notna(row["max_aging_min"]):
@@ -139,6 +152,8 @@ class TestAgingSpan:
                     float(row["min_aging_min"]), float(row["max_aging_min"])
                 )
         for lot in lots.lots:
+            if lot.item_code == settings.green_tyre_code:
+                continue  # per-block, span=0
             if lot.item_code not in aging_by_item:
                 continue
             mn, mx = aging_by_item[lot.item_code]

@@ -35,6 +35,8 @@ class Settings:
     # t0 anchor (L17)
     t0_default: datetime
     t0_guardrail_enabled: bool
+    t0_auto: bool
+    t0_safety_buffer_min: int
 
     # Soft-rule defaults
     efficiency_factor: float
@@ -44,6 +46,7 @@ class Settings:
     # Building (L3 / L18)
     building_pool: tuple[str, ...]
     building_primary: str
+    building_tyres_per_cycle: int
 
     # Exclusions (L12, L13)
     capstrip_items: frozenset[str]
@@ -74,11 +77,14 @@ def load_settings(yaml_path: Path | None = None) -> Settings:
         total_demand_tyres=int(p["total_demand_tyres"]),
         t0_default=_parse_dt(d["t0"]["default"]),
         t0_guardrail_enabled=bool(d["t0"]["guardrail_assertion"]),
+        t0_auto=bool(d["t0"].get("auto", True)),
+        t0_safety_buffer_min=int(d["t0"].get("safety_buffer_min", 60)),
         efficiency_factor=float(d["efficiency"]["factor"]),
         default_transfer_min=int(d["defaults"]["transfer_time_min"]),
         changeover_min_v1=int(d["defaults"]["changeover_min_v1"]),
         building_pool=tuple(str(x) for x in d["building"]["pool"]),
         building_primary=str(d["building"]["primary"]),
+        building_tyres_per_cycle=int(d["building"].get("tyres_per_cycle", 2)),
         capstrip_items=frozenset(str(x) for x in d["exclusions"]["capstrip_items"]),
         work_away_items=frozenset(str(x) for x in d["work_away_items"]),
         green_tyre_components=tuple(str(x) for x in d["green_tyre_components"]),

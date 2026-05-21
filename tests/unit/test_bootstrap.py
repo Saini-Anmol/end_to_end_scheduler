@@ -12,9 +12,10 @@ from V1.setups import bootstrap
 
 
 def test_bootstrap_halts_on_bd_fillering(
-    input_dir: Path, settings: Settings, tmp_output_root: Path
+    nulled_input_dir: Path, settings: Settings, tmp_output_root: Path
 ) -> None:
-    code = bootstrap.run(settings, input_dir=input_dir, output_root=tmp_output_root)
+    code = bootstrap.run(settings, input_dir=nulled_input_dir,
+                          output_root=tmp_output_root)
     assert code == int(HaltCode.AUDIT_NULL_PROC_TIME) == 10
     # Audit artefacts exist; schedule.csv does not.
     runs = list(tmp_output_root.iterdir())
@@ -26,10 +27,11 @@ def test_bootstrap_halts_on_bd_fillering(
 
 
 def test_bootstrap_audit_report_names_binding_finding(
-    input_dir: Path, settings: Settings, tmp_output_root: Path
+    nulled_input_dir: Path, settings: Settings, tmp_output_root: Path
 ) -> None:
     """Fixture 2 acceptance — audit_report.md must NAME the offending row."""
-    bootstrap.run(settings, input_dir=input_dir, output_root=tmp_output_root)
+    bootstrap.run(settings, input_dir=nulled_input_dir,
+                   output_root=tmp_output_root)
     out = next(tmp_output_root.iterdir())
     text = (out / "audit_report.md").read_text()
     assert "HALT" in text

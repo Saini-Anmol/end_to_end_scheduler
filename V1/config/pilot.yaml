@@ -12,8 +12,17 @@ pilot:
   total_demand_tyres: 2620
   pre_existing_gt_inventory: 0
 
-# L17 — t0 anchor (placeholder). Real L2-derived t0 is deferred to V2.
+# L17 — t0 anchor.
+#   When `auto: true` (default), the engine computes t0 from the actual
+#   BOM depth + aging + per-item duration estimate at run start:
+#     t0 = first_curing_start − critical_path − safety_buffer_min
+#   This makes t0 a *data-driven* "earliest feasible production start"
+#   rather than a hard-coded placeholder.
+#   `default` is the fallback when `auto: false` or when the auto compute
+#   somehow returns a non-positive critical path.
 t0:
+  auto: true
+  safety_buffer_min: 60
   default: "2026-05-01 07:00"
   guardrail_assertion: true        # HALT if t0 + sum(MIN_aging) along longest path > first_curing_start
 
@@ -30,6 +39,7 @@ defaults:
 building:
   pool: ["6001", "6002", "6003", "6004", "7001", "7002", "7003", "7004"]
   primary: "6001"                  # spill to next-lowest only on aging-MAX breach
+  tyres_per_cycle: 2               # Each VMIMaxx cycle produces 2 green tyres
 
 # L12 — Capstrip chain exclusion. Skip entirely from lots/schedule/infeasibilities.
 exclusions:

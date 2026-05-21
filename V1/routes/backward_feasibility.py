@@ -31,6 +31,12 @@ def run(
     curing_starts: dict[str, int] = {
         d.block_id: d.curing_start_min for d in demand.block_demands
     }
+    # Also include zero-qty placeholder rows from curing_df (b00 doesn't
+    # appear in demand because of the zero-tyre filter, but GT lots cover
+    # every curing row per L1).
+    for idx, row in norm.curing_df.reset_index(drop=True).iterrows():
+        bid = f"b{int(idx):02d}"
+        curing_starts.setdefault(bid, int(row["start_min"]))
 
     # Cache per-item chain min-aging (reused across all lots of the same item).
     chain_cache: dict[str, int] = {}

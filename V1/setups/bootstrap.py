@@ -31,6 +31,7 @@ from V1.reports import (
     writer_audit,
     writer_dag,
     writer_diagnostics,
+    writer_excel,
     writer_kpi,
     writer_reservation_log,
 )
@@ -47,6 +48,7 @@ from V1.routes import (
     visualisation,
 )
 from V1.setups.run_context import make_run_context
+from V1.setups.t0_compute import compute_auto_t0
 from V1.utilities.bom_walker import build_graph
 from V1.utilities.unit_conversion import normalise
 
@@ -70,6 +72,12 @@ def run(
     if audit_result.halt_findings:
         first = audit_result.halt_findings[0]
         code = audit.HALT_CODE_MAP.get(first.code, HaltCode.AUDIT_NULL_PROC_TIME)
+        # Bundle whatever we have into the workbook before exiting.
+        writer_excel.write_halt(
+            audit=audit_result, settings=ctx.settings,
+            t0=ctx.settings.t0_default, run_id=ctx.run_id,
+            output_dir=ctx.output_dir,
+        )
         print(
             f"[audit] HALT — {len(audit_result.halt_findings)} HALT finding(s), "
             f"{len(audit_result.warn_findings)} warning(s). "
@@ -85,7 +93,23 @@ def run(
     )
 
     # 2. Unit normalisation
-    norm = normalise(audit_result, ctx.settings)
+    #    L17 auto-t0: anchor the run at the earliest feasible production
+    #    start derived from the BOM critical path + aging + durations.
+    t0_override = None
+    if ctx.settings.t0_auto:
+        t0_override, critical_path_min, sample_path = compute_auto_t0(
+            audit_result, ctx.settings,
+            safety_buffer_min=ctx.settings.t0_safety_buffer_min,
+        )
+        chain_str = " → ".join(reversed(sample_path)) if sample_path else "—"
+        print(
+            f"[t0_auto] critical_path={critical_path_min} min, "
+            f"buffer={ctx.settings.t0_safety_buffer_min} min, "
+            f"t0={t0_override.isoformat(sep=' ')}",
+            flush=True,
+        )
+        print(f"[t0_auto] critical chain: {chain_str}", flush=True)
+    norm = normalise(audit_result, ctx.settings, t0=t0_override)
     print(f"[normalise] t0={norm.t0}", flush=True)
 
     # 3. BOM graph
@@ -152,5 +176,13 @@ def run(
     visualisation.run(sched, demand, bom, norm.t0, ctx.output_dir)
     print("[viz] bom_graph.svg + schedule.csv + machine_view.csv + gantt_*.html",
           flush=True)
+
+    # 13. Bundled Excel workbook — single file containing every tabular sheet.
+    workbook_path = writer_excel.write_full(
+        audit=audit_result, lots=lots, schedule=sched, diag=diag,
+        kpi=kpi_result, settings=ctx.settings, t0=norm.t0,
+        run_id=ctx.run_id, output_dir=ctx.output_dir,
+    )
+    print(f"[excel] {workbook_path.name}", flush=True)
 
     return int(HaltCode.OK)

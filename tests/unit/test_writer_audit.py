@@ -15,8 +15,10 @@ from V1.routes import audit
 
 
 @pytest.fixture(scope="module")
-def result(input_dir: Path, settings: Settings) -> audit.AuditResult:
-    return audit.run(input_dir, settings)
+def result(nulled_input_dir: Path, settings: Settings) -> audit.AuditResult:
+    """Use the nulled fixture so the HALT-on-BD writer behaviour fires
+    deterministically regardless of live input file state."""
+    return audit.run(nulled_input_dir, settings)
 
 
 def test_writes_audit_report_md(result: audit.AuditResult, tmp_path: Path) -> None:
