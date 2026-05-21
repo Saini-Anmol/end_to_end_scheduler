@@ -60,15 +60,20 @@ uv sync --extra dev --extra viz
 
 ### Run end-to-end
 
-```bash
-uv run python -m V1.setups.cli --inputs input/
-```
-
-Or via the installed console script:
+The single canonical command:
 
 ```bash
-uv run btp-scheduler --inputs input/
+uv run python main.py
 ```
+
+`main.py` is a thin orchestrator at the project root: it puts the repo on `sys.path` and forwards to `V1.setups.cli.main`, defaulting `--inputs` to `./input/`. Equivalent invocations:
+
+```bash
+uv run python -m V1.setups.cli --inputs input/        # underlying module
+uv run btp-scheduler --inputs input/                  # installed console script
+```
+
+Override the input or output folder with `--inputs <path>` / `--outputs <path>` flags. Defaults: `./input/` for inputs, `./output/` (per `pilot.yaml`'s `output.root`) for outputs.
 
 ### Expected behaviour on the vanilla pilot inputs
 
@@ -105,44 +110,85 @@ The audit module surfaces every data-quality finding it sees, classified as **HA
 
 Every run creates a fresh dated folder `output/<HHMM-DD-MM-YYYY>/`. Folders are never overwritten across runs — re-running within the same minute raises `FileExistsError` (deliberate).
 
+A successful run emits **seven files**:
+
 | Artefact | Content |
 |---|---|
-| `audit_report.md` | Section 9 findings, split into HALT vs WARN buckets, with sheet / row citations. Written on every run, including HALTs. |
-| `routing_cleaned.csv` | Routing after dedup (L7), Capstrip drop (L12), and machine-list normalisation (§8.F — adds derived `eligible_machine_count`). |
-| `schedule.csv` | Lot-level schedule. Columns: `lot_id, item_code, item_type, op_seq, machine_id, start_min, end_min, duration_min, qty, uom, serves_blocks, start_dt, end_dt`. |
-| `machine_view.csv` | Same rows sorted by `(machine_id, start_min, lot_id)` for floor-level execution. |
-| `building_to_curing.csv` | One row per Building (GT) lot per served block. Classification = `OK` / `LATE` / `EARLY` with delta minutes against the curing block start. |
-| `aging_violations.csv` | One row per breached consumer-producer pair: `consumer_lot, predecessor_lot, item_code, edge_min, edge_max, actual_gap, violation_type` (MIN or MAX). |
-| `infeasibilities.csv` | One row per unschedulable lot with the binding constraint named (`AND_JOIN`, `BLOCK_OVERLAP`, `AGING`, `MACHINE`, `DURATION`, `DEADLINE`). |
-| `reservation_log.csv` | Per CLAUDE.md §16: `event_minute, event_type, consumer_lot_id, producer_lot_id, item_code, qty, producer_end_min, latest_acceptable_start_min`. |
-| `kpi.csv` | Totals (lots scheduled / infeasible / warnings), OTIF %, aging-violation breakdown, processing minutes, schedule span, per-machine utilisation. |
-| `dag.json` | Machine-readable lot dependency graph — nodes + edges with aging windows and effective-gap minutes. |
+| **`btp_schedule.xlsx`** | **Headline planner artefact.** Single workbook with 11 sheets — `summary`, `kpi`, `schedule`, `machine_view`, `building_to_curing`, `aging_violations`, `infeasibilities`, `reservation_log`, `routing_cleaned`, `audit_halt`, `audit_warn`. Every tabular output lives here. |
+| `audit_report.md` | Markdown rendering of Section 9 findings, split into HALT vs WARN buckets with sheet / row citations. Same data as the `audit_halt` + `audit_warn` sheets, formatted for git-diff / preview. |
+| `dag.json` | Machine-readable lot dependency graph — nodes + edges with aging windows and effective-gap minutes. JSON because Excel can't represent the graph structure cleanly. |
 | `bom_graph.svg` | Static BOM tree viz. Capstrip subtree appears tagged "OUT-OF-SCOPE — awaiting data". |
-| `gantt_<block>.html` | Plotly Gantt for three sample blocks — earliest, middle, latest in the horizon. |
-| **`btp_schedule.xlsx`** | **Bundled workbook — single file with one sheet per tabular artefact (`summary`, `kpi`, `schedule`, `machine_view`, `building_to_curing`, `aging_violations`, `infeasibilities`, `reservation_log`, `routing_cleaned`, `audit_halt`, `audit_warn`). The headline artefact the planner opens.** On HALT runs, a slimmed-down version is written with `summary`, `audit_halt`, `audit_warn`, and `routing_cleaned` only. |
+| `gantt_b<NN>.html` | Plotly Gantt for three sample blocks — earliest, middle, latest in the horizon (×3 files). |
 
-**HALT runs** skip `schedule.csv` and every downstream artefact. `audit_report.md` and `routing_cleaned.csv` are always written.
+### Workbook sheet contents
+
+| Sheet | Columns / description |
+|---|---|
+| `summary` | Run metadata + headline KPIs (run_id, t0, sku, OTIF, processing minutes, span). |
+| `kpi` | Full KPI table: counts, OTIF %, aging-violation breakdown, processing minutes, schedule span, per-machine utilisation. |
+| `schedule` | Lot-level schedule. `lot_id, item_code, item_type, op_seq, machine_id, start_min, end_min, duration_min, qty, uom, serves_blocks, on_time_flag, start_dt, end_dt`. `on_time_flag=False` marks lots that finished after their aging-MIN ceiling (L11 flag-and-continue). |
+| `machine_view` | Same rows sorted by `(machine_id, start_min, lot_id)` for floor-level execution. |
+| `building_to_curing` | One row per Building (GT) lot per served block. Classification = `OK` / `LATE` / `EARLY` / `ZERO_QTY`. |
+| `aging_violations` | One row per breached consumer-producer pair: `consumer_lot, predecessor_lot, item_code, edge_min, edge_max, actual_gap, violation_type`. |
+| `infeasibilities` | One row per unschedulable lot with the binding constraint named (`AND_JOIN`, `BLOCK_OVERLAP`, `AGING`, `MACHINE`, `DURATION`, `DEADLINE`). |
+| `reservation_log` | Per CLAUDE.md §16: `event_minute, event_type, consumer_lot_id, producer_lot_id, item_code, qty, producer_end_min, latest_acceptable_start_min`. |
+| `routing_cleaned` | Routing after dedup (L7), Capstrip drop (L12), and machine-list normalisation (§8.F — adds derived `eligible_machine_count`). |
+| `audit_halt` | HALT findings only. |
+| `audit_warn` | WARN findings only. |
+
+### HALT-run layout
+
+A HALT run emits a slim workbook (`summary`, `audit_halt`, `audit_warn`, `routing_cleaned`) plus `audit_report.md`. No `dag.json`, `bom_graph.svg`, or gantts — downstream routes never ran.
+
+### Workbook formatting
+
+Every sheet uses a three-row banner layout:
+
+- **Row 1:** merged title bar (navy fill, bold white, 14pt) — e.g. `Production Schedule`, `Key Performance Indicators`.
+- **Row 2:** column headers (steel-blue fill, bold white).
+- **Row 3+:** data, with freeze panes anchored at `A3` so the title and headers stay visible while scrolling.
+
+Selected cells carry traffic-light conditional fills:
+
+| Sheet | Column | Bands |
+|---|---|---|
+| `kpi` | `value` (on `*_util_pct` rows) | ≥ 90 % green · 50–89.99 % yellow · < 50 % light red |
+| `schedule`, `machine_view` | `on_time_flag` | `True` green · `False` light red |
+| `building_to_curing` | `classification` | `OK` green · `LATE` light red · `EARLY` yellow · `ZERO_QTY` gray |
+| `aging_violations` | `violation_type` | Any breach → light red |
+| `audit_halt`, `audit_warn` | `severity` | `HALT` light red · `WARN` yellow |
+
+**Reading the workbook back programmatically:** the title row shifts the column header to Excel row 2. Use the helper to skip the offset:
+
+```python
+from V1.reports import writer_excel
+schedule_df = writer_excel.read_sheet("output/<run>/btp_schedule.xlsx", "schedule")
+```
+
+This is equivalent to `pd.read_excel(path, sheet_name="schedule", header=1)`. All test suites and downstream tooling should prefer the helper so the layout offset is encapsulated.
 
 ---
 
 ## Pipeline architecture
 
-Twelve modules, each runnable in isolation. Orchestrated by [V1/setups/bootstrap.py](V1/setups/bootstrap.py). Module boundaries follow CLAUDE.md §10 / §15.
+Thirteen pipeline steps, each runnable in isolation. Orchestrated by [V1/setups/bootstrap.py](V1/setups/bootstrap.py). Steps 1–12 map to CLAUDE.md §10 / §15; step 13 is the bundled-workbook writer.
 
 | # | Module | Purpose |
 |---|---|---|
-| 1 | [`audit`](V1/routes/audit.py) | Read raw inputs; surface data-quality findings; dedup masters; parse messy machine cells; drop Capstrip (L12) and the EHT1000 NaN-is_primary row (L7). HALT-capable. |
-| 2 | [`unit_normalisation`](V1/utilities/unit_conversion.py) | Convert aging Days / Hours / Minutes → integer minutes; convert routing `proc_time` SEC/BATCH, MIN → minutes via `ceil(x/60)`; anchor curing datetimes to `t0`. Single ceil rounding direction throughout (L20). |
+| 1 | [`audit`](V1/routes/audit.py) | Read raw inputs; surface data-quality findings; dedup masters; parse messy machine cells; fix `Â°` mojibake; drop Capstrip (L12) and the EHT1000 NaN-`is_primary` row (L7). HALT-capable. |
+| 2a | [`t0_compute`](V1/setups/t0_compute.py) | L17 auto-`t0`: compute the longest BOM critical path (per-item duration + min-aging) from leaves to SKU, then anchor `t0 = first_curing_start − critical_path − safety_buffer_min`. Bypassed when `pilot.yaml`'s `t0.auto: false`. |
+| 2b | [`unit_normalisation`](V1/utilities/unit_conversion.py) | Convert aging Days / Hours / Minutes (and `Hr/Hrs/Min` aliases) → integer minutes; convert routing `proc_time` SEC/BATCH, SEC, MIN → minutes via `ceil(x/60)`; anchor curing datetimes to the chosen `t0`. Single ceil rounding direction throughout (L20). |
 | 3 | [`bom_graph`](V1/utilities/bom_walker.py) | Build an `nx.DiGraph` from the BOM; propagate `is_capstrip` down from the configured seeds; validate acyclicity. |
-| 4 | [`demand_explosion`](V1/routes/demand_explosion.py) | Walk the BOM per curing block: `child_qty = parent_qty × (edge.qty / edge.output_qty)`. Aggregate per item; preserve `serves_blocks` chronologically. |
-| 5 | [`lot_sizing`](V1/routes/lot_sizing.py) | Forward-aggregate consecutive block demands into the largest lot satisfying both `qty ≤ MPQ_Max` and `curing-span ≤ (aging_MAX − aging_MIN)`. Equal-split when a single block exceeds `MPQ_Max`. **HALT** when a single-block lot < `MPQ_Min` AND is aging-isolated from all other demand (§8.C). |
+| 4 | [`demand_explosion`](V1/routes/demand_explosion.py) | Walk the BOM per curing block: `child_qty = parent_qty × (edge.qty / edge.output_qty)`. Aggregate per item; preserve `serves_blocks` chronologically. Zero-tyre blocks (e.g. the pre-shift `b00` placeholder) generate no demand. |
+| 5 | [`lot_sizing`](V1/routes/lot_sizing.py) | Forward-aggregate consecutive block demands into the largest lot satisfying both `qty ≤ MPQ_Max` and `curing-span ≤ (aging_MAX − aging_MIN)`. Equal-split when a single block exceeds `MPQ_Max`. **Green Tyre is special-cased to one lot per curing row per L1.** **HALT** when a single-block lot < `MPQ_Min` AND is aging-isolated from all other demand (§8.C). |
 | 6 | [`graph_construction`](V1/routes/graph_construction.py) | Build the lot-level DAG; attach `effective_gap = MAX(transfer, MIN_aging)` per edge (L14). Emit `dag.json`. |
-| 7 | [`backward_feasibility`](V1/routes/backward_feasibility.py) | Per-lot `latest_acceptable_end_min` from the min-aging chain to the SKU. Pure feasibility limit — no time commitment. |
-| 8 | [`time_calculation`](V1/routes/time_calculation.py) | Per `(lot, eligible_machine)`: `duration_min = ceil(nominal_min / 0.95)` (L10 / L20). |
-| 9 | [`forward_scheduler`](V1/routes/forward_scheduler.py) | Topological greedy forward sweep. FEFO producer pick per ingredient (L19); atomic AND-join for Building lots (§4.2); L18 prefers Building primary `6001`; L11 flag-and-continue on infeasibility. |
-| 10 | [`diagnostics`](V1/routes/diagnostics.py) | Recompute every consumer-producer gap; flag `[MIN, MAX]` breaches (inclusive bounds, L22); classify Building → Curing handoffs. |
+| 7 | [`backward_feasibility`](V1/routes/backward_feasibility.py) | Per-lot `latest_acceptable_end_min` from the min-aging chain to the SKU. Conservative, processing-time-agnostic — refined by the forward scheduler's CPM pass. |
+| 8 | [`time_calculation`](V1/routes/time_calculation.py) | Per `(lot, eligible_machine)`: `duration_min = ceil(nominal_min / 0.95)` (L10 / L20). Three regimes: **continuous** (`M/MIN` length-based), **per-batch** (when `batch_size` + `batch_UNIT` are set), and **per-cycle / per-unit** (Tyre Building consumes one cycle per `building_tyres_per_cycle` tyres; everything else is one cycle per output unit). |
+| 9 | [`forward_scheduler`](V1/routes/forward_scheduler.py) | Topological greedy forward sweep with a **CPM backward pass** (per-lot `floor` = earliest start that honours aging-MAX of every consumer; `ceiling` = latest end that honours aging-MIN). FEFO producer pick per ingredient (L19); atomic AND-join for Building lots (§4.2); L18 prefers Building primary `6001`; gap-aware machine intervals; L11 flag-and-continue with `on_time_flag` on every committed lot. |
+| 10 | [`diagnostics`](V1/routes/diagnostics.py) | Recompute every consumer-producer gap; flag `[MIN, MAX]` breaches (inclusive bounds, L22); classify Building → Curing handoffs as `OK` / `LATE` / `EARLY` / `ZERO_QTY`; mirror LATE / EARLY into `aging_violations.csv` with a synthetic `CURING__<block>` consumer id. |
 | 11 | [`kpi`](V1/routes/kpi.py) | OTIF % at the Building → Curing handoff, aging-violation totals, processing minutes, schedule span, per-machine utilisation. |
 | 12 | [`visualisation`](V1/routes/visualisation.py) | `bom_graph.svg`, `schedule.csv`, `machine_view.csv`, and `gantt_<block>.html` for three sample blocks. |
+| 13 | [`writer_excel`](V1/reports/writer_excel.py) | Bundled `btp_schedule.xlsx` workbook with one sheet per tabular artefact + a curated `summary` sheet. HALT runs get a slimmed-down workbook (`summary`, `routing_cleaned`, `audit_halt`, `audit_warn`). |
 
 Module boundaries are typed frozen dataclasses (`AuditResult`, `NormalisedResult`, `BomGraph`, `DemandResult`, `LotsResult`, `LotDagResult`, `FeasibilityResult`, `DurationResult`, `ScheduleResult`, `DiagnosticsResult`, `KpiResult`). Each module can be invoked from a Python REPL given the upstream result, which makes incremental debugging straightforward.
 
@@ -185,6 +231,7 @@ defaults:
 building:
   pool: ["6001", "6002", "6003", "6004", "7001", "7002", "7003", "7004"]
   primary: "6001"                  # L18 — V1 deterministic primary; spill on aging-MAX breach
+  tyres_per_cycle: 2               # VMIMaxx GROUP produces 2 green tyres per cycle
 
 exclusions:
   capstrip_items: [...]            # L12 — five items hard-excluded from scheduling
@@ -211,7 +258,12 @@ Per CLAUDE.md L11 / §12.2 / §13:
 - **`machine_id` is a string end-to-end** so leading zeros on the mixer pool (`0201`, `0202`, …) survive (L23).
 - **`lot_id` is the canonical tiebreaker** for every dispatch and FEFO decision (L15 step 4, L19).
 
-The integration test `test_deterministic_artefacts_byte_identical` runs the full pipeline twice and asserts the 9 deterministic output files are byte-identical between runs. This is the regression gate for non-deterministic changes.
+The integration tests run the full pipeline twice and assert two complementary determinism guarantees:
+
+- **`dag.json`** is **byte-identical** across runs (JSON serialisation with `sort_keys=True` is fully stable).
+- **`btp_schedule.xlsx`** is **sheet-by-sheet dataframe-equal** across runs — the workbook bytes themselves vary (openpyxl embeds a build timestamp) but every cell value is reproducible. The `summary` sheet is excluded because it carries the per-run `run_id` by design.
+
+Together these are the regression gate for non-deterministic changes.
 
 ---
 
@@ -235,9 +287,9 @@ In every HALT case the engine still writes `audit_report.md` and `routing_cleane
 ## Testing
 
 ```bash
-uv run pytest tests -q                  # all 215 tests
-uv run pytest tests/unit -q             # 209 unit tests
-uv run pytest tests/integration -v      # 6 end-to-end + byte-identical re-run tests
+uv run pytest tests -q                  # all 236 tests
+uv run pytest tests/unit -q             # 228 unit tests
+uv run pytest tests/integration -v      # 8 end-to-end + determinism tests
 ```
 
 ### Five golden fixtures (CLAUDE.md §17)
@@ -267,23 +319,34 @@ Hand-computed cases that pin down the trickiest behaviours. Inputs are isolated 
 .
 ├── CLAUDE.md                 # Authoritative spec — read first
 ├── README.md                 # This file — how to install, run, and read outputs
+├── main.py                   # Canonical entry — `uv run python main.py`
 ├── pyproject.toml            # uv-managed deps; Python ≥ 3.11
 ├── input/                    # Raw inputs (read-only)
 │   ├── BTP_PCR_May_Curing_Schedule.csv
 │   ├── BTP_Routing_…BOM_Final (1).xlsx
 │   └── JKT_BTP_Forward_Scheduler_Problem_Statement.pdf
 ├── output/<HHMM-DD-MM-YYYY>/ # One dated folder per run; never overwritten
+│                             # (btp_schedule.xlsx + 11 standalone artefacts)
 ├── V1/
 │   ├── config/               # pilot.yaml + Settings + HaltCode + enums
 │   ├── models/               # Frozen dataclasses (Lot, ScheduledLot, …)
-│   ├── routes/               # 12 pipeline modules
-│   ├── utilities/            # Pure helpers (time math, FEFO, BOM walker, machine parser, unit conversion)
+│   ├── routes/               # Pipeline modules — audit, demand_explosion,
+│   │                         # lot_sizing, graph_construction,
+│   │                         # backward_feasibility, time_calculation,
+│   │                         # forward_scheduler, diagnostics, kpi,
+│   │                         # visualisation
+│   ├── utilities/            # Pure helpers — time math, FEFO, BOM walker,
+│   │                         # machine parser, unit conversion, lot_id
 │   ├── reports/              # Output writers — datetime ↔ minute boundary
-│   └── setups/               # CLI, run context, bootstrap orchestrator
+│   │                         # (writer_audit, _diagnostics, _kpi, _schedule,
+│   │                         #  _dag, _gantt, _bom_graph, _reservation_log,
+│   │                         #  _excel)
+│   └── setups/               # CLI, run context, bootstrap orchestrator,
+│                             # t0_compute (L17 auto-anchor)
 ├── tests/
 │   ├── conftest.py           # Shared fixtures
 │   ├── fixtures/             # 5 golden cases from CLAUDE.md §17 (inputs + notes)
-│   ├── unit/                 # 209 unit tests across every module + utility
+│   ├── unit/                 # 229 unit tests across every module + utility
 │   └── integration/          # 6 end-to-end + byte-identical re-run tests
 └── docs/
     └── methodology.md        # Approach, assumptions, acceptance evidence
@@ -297,9 +360,9 @@ V1 prioritises **correctness over optimisation**. CLAUDE.md §1.5 enumerates wha
 
 The codebase additionally carries four implementation-level simplifications, **documented in the module docstrings** rather than hidden:
 
-1. **Forward scheduler uses a topological greedy sweep**, not the strict event-driven dispatcher specified by L21. Sequential dispatch is deterministic on the pilot data; the formal event heap with `(event_minute, event_class, lot_id)` ordering, and the full L15 LSF tiebreak chain, are V2 work.
+1. **Forward scheduler uses a topological greedy sweep**, not the strict event-driven dispatcher specified by L21. Sequential dispatch is deterministic on the pilot data; the formal event heap with `(event_minute, event_class, lot_id)` ordering, and the full L15 LSF tiebreak chain, are V2 work. The scheduler does carry a CPM backward pass (per-lot `floor` + `ceiling`) and gap-aware machine intervals to back-fill earlier free slots.
 2. **Soft-reservation expiry / release (L16) is not modelled.** The reservation log emits `created` + `consumed` rows at commit; `expired` and `released` events do not occur because the topo-greedy dispatcher has no contention.
-3. **Backward feasibility uses the min-aging chain only.** §15 step 15 wanted `effective_gap + processing_time` along the longest path; the V1 implementation drops the processing term, yielding a conservative (i.e. tighter) deadline. Any schedule that survives is feasible.
+3. **Backward feasibility uses the min-aging chain only.** §15 step 15 wanted `effective_gap + processing_time` along the longest path; the V1 module emits a conservative deadline using min-aging only. The forward scheduler refines this with its own CPM pass using actual lot durations.
 4. **§9 finding #9** (informal `predecessor_rule` text validation) is not implemented; `operation_seq` is the structured signal we honour.
 
 These are not gaps in correctness — every hard constraint in CLAUDE.md §5 is enforced and self-reported. They are the concrete starting points for V2.
@@ -315,3 +378,4 @@ These are not gaps in correctness — every hard constraint in CLAUDE.md §5 is 
 - [tests/integration/test_end_to_end.py](tests/integration/test_end_to_end.py) — HALT-path + full-path + byte-identical re-run tests.
 - [.claude/agents/plant-scheduler-reviewer.md](.claude/agents/plant-scheduler-reviewer.md) — read-only domain-review agent for evaluating the scheduling approach against real plant operations.
 - [.claude/agents/scheduler-code-reviewer.md](.claude/agents/scheduler-code-reviewer.md) — read-only code-review agent for auditing the implementation against CLAUDE.md.
+- [.claude/agents/scheduler-output-reviewer.md](.claude/agents/scheduler-output-reviewer.md) — read-only, token-efficient reviewer for the per-run `output/<HHMM-DD-MM-YYYY>/` artefacts.
