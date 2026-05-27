@@ -18,8 +18,7 @@ a fresh `output/<HHMM-DD-MM-YYYY>/` folder:
     diagnostics              →  aging_violations.csv, building_to_curing.csv,
                                 infeasibilities.csv
     kpi                      →  kpi.csv
-    visualisation            →  bom_graph.svg, schedule.csv, machine_view.csv,
-                                gantt_<early|mid|late>.html
+    visualisation            →  bom_graph.svg, gantt_all.html
     writer_excel             →  btp_schedule.xlsx   ← bundled workbook
 
 The Excel workbook is the headline artefact — one sheet per tabular output

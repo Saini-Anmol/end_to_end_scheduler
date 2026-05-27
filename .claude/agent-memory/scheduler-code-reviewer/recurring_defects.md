@@ -81,6 +81,49 @@ once per block with accumulated qty. Verified by runtime check 2026-05-21.
 
 ---
 
+## Review session: 2026-05-25 (focused: MPQ + UOM + Parallel/Sequential)
+
+### D9 — Producer lot double-consumption by multiple GT lots (Critical / by design)
+`V1/routes/forward_scheduler.py:322-329, 466-481`: ingredient lots that serve N curing
+blocks (e.g. BD_12843443_4__60__0001 serving b01-b07) are selected by FEFO for EACH
+of the GT lots they overlap. 78 distinct producer lots are referenced by >1 GT lot.
+This is correct behaviour — the ingredient lot's qty covers all served blocks — but
+the reservation_log shows `created+consumed` repeated N times for the same producer,
+which is misleading (looks like N-fold over-consumption). No qty accounting error
+exists in V1 because qty traceability is per-block, but it should be flagged as
+a known log artefact until L16 exclusive reservation is fully implemented.
+**File:** `V1/routes/forward_scheduler.py:322-329`
+**Not a scheduling error for V1**; becomes a correctness issue when L16 is implemented.
+
+### D10 — bom_graph.svg and gantt_*.html are non-deterministic (Medium)
+`V1/reports/writer_bom_graph.py:25`: `nx.topological_sort()` is documented as
+"nonunique permutation" — not deterministic. Different runs produce different edge
+layouts. Gantt HTML divs use plotly-internal `uuid.uuid4()` — different run IDs.
+Only the xlsx data sheets and dag.json are byte-identical across runs.
+**Files:** `V1/reports/writer_bom_graph.py:25`, `V1/reports/writer_gantt.py:63`
+**Spec:** CLAUDE.md L4.6, Section 13
+
+### D11 — 56 lot-sizing under-min warnings silently lost (Medium)
+`V1/routes/lot_sizing.py` `_enforce_min_qty_or_halt()` appends warnings to
+`LotsResult.warnings`. These are printed to stdout in bootstrap but are NOT
+written to `audit_report.md` or any output artefact. The planner cannot see them
+after the run. Items: B815, HS106, JT444, MB1232, MB231, MS51, MS52, MS53, MT270.
+**File:** `V1/reports/writer_audit.py` (missing lot_sizing warnings section)
+
+### D12 — CPJ1218 bom_output_qty ambiguous (Open Question)
+CPJ1218 has two BOM rows as Output: row11 output_qty=1860 MM (feeds 162-variant cut),
+row16 output_qty=1950 MM (feeds 154-variant cut). `build_graph` takes the first row
+(1860). MPQ NOS→MM conversion uses 1860 for all CPJ1218 lots regardless of which cut.
+This is a data ambiguity in the source BOM, not a code defect. Raise with planner.
+**File:** `V1/utilities/bom_walker.py:265`
+
+### CONFIRMED UNCHANGED — D2 Building machine spill (High, session 2026-05-21)
+Still present. 17 lots on 6001, 12 on 6002, 8 on 6003. Spill is triggered by
+earliest-end not by aging-MAX breach per L3.
+**File:** `V1/routes/forward_scheduler.py:415-431`
+
+---
+
 ## Review session: 2026-05-21 (pass 2 — fix verification)
 
 ### FIXED — Building duration formula (was Critical Issue 1)

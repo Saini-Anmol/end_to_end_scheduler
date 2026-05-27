@@ -49,16 +49,20 @@ def test_writes_bom_svg(
     assert len(body) > 1000
 
 
-def test_gantt_html_per_sample_block(
+def test_master_and_piecewise_gantts(
     viz_inputs, tmp_path: Path
 ) -> None:
     sched, demand, bom, t0 = viz_inputs
     visualisation.run(sched, demand, bom, t0, tmp_path)
-    htmls = sorted(tmp_path.glob("gantt_*.html"))
-    # Up to 3 sample blocks; might be fewer if a block has no scheduled lots.
-    assert 1 <= len(htmls) <= 3
-    for p in htmls:
-        body = p.read_text()
+    htmls = sorted(p.name for p in tmp_path.glob("gantt_*.html"))
+    assert htmls == [
+        "gantt_all.html",
+        "gantt_part1.html",
+        "gantt_part2.html",
+        "gantt_part3.html",
+    ]
+    for name in htmls:
+        body = (tmp_path / name).read_text()
         assert "<html" in body or "<!DOCTYPE html>" in body
 
 

@@ -118,7 +118,7 @@ A successful run emits **seven files**:
 | `audit_report.md` | Markdown rendering of Section 9 findings, split into HALT vs WARN buckets with sheet / row citations. Same data as the `audit_halt` + `audit_warn` sheets, formatted for git-diff / preview. |
 | `dag.json` | Machine-readable lot dependency graph — nodes + edges with aging windows and effective-gap minutes. JSON because Excel can't represent the graph structure cleanly. |
 | `bom_graph.svg` | Static BOM tree viz. Capstrip subtree appears tagged "OUT-OF-SCOPE — awaiting data". |
-| `gantt_b<NN>.html` | Plotly Gantt for three sample blocks — earliest, middle, latest in the horizon (×3 files). |
+| `gantt_all.html` + `gantt_part{1,2,3}.html` | One master Gantt covering every machine across the full horizon, plus three piece-wise Gantts splitting the schedule's time range into thirds (so dense periods are readable). Rows are machines (sorted by `machine_id`); bars are coloured by `item_type`; hover surfaces `lot_id`, `item_code`, qty, duration, `serves_blocks`, and `on_time_flag`. The date range covered by each part is in its chart title. |
 
 ### Workbook sheet contents
 
@@ -187,7 +187,7 @@ Thirteen pipeline steps, each runnable in isolation. Orchestrated by [V1/setups/
 | 9 | [`forward_scheduler`](V1/routes/forward_scheduler.py) | Topological greedy forward sweep with a **CPM backward pass** (per-lot `floor` = earliest start that honours aging-MAX of every consumer; `ceiling` = latest end that honours aging-MIN). FEFO producer pick per ingredient (L19); atomic AND-join for Building lots (§4.2); L18 prefers Building primary `6001`; gap-aware machine intervals; L11 flag-and-continue with `on_time_flag` on every committed lot. |
 | 10 | [`diagnostics`](V1/routes/diagnostics.py) | Recompute every consumer-producer gap; flag `[MIN, MAX]` breaches (inclusive bounds, L22); classify Building → Curing handoffs as `OK` / `LATE` / `EARLY` / `ZERO_QTY`; mirror LATE / EARLY into `aging_violations.csv` with a synthetic `CURING__<block>` consumer id. |
 | 11 | [`kpi`](V1/routes/kpi.py) | OTIF % at the Building → Curing handoff, aging-violation totals, processing minutes, schedule span, per-machine utilisation. |
-| 12 | [`visualisation`](V1/routes/visualisation.py) | `bom_graph.svg`, `schedule.csv`, `machine_view.csv`, and `gantt_<block>.html` for three sample blocks. |
+| 12 | [`visualisation`](V1/routes/visualisation.py) | `bom_graph.svg` plus four Gantt HTMLs: a master `gantt_all.html` covering the full horizon, and three piece-wise `gantt_part{1,2,3}.html` splitting the horizon into equal-time thirds. The lot-level schedule + machine view live as sheets inside `btp_schedule.xlsx`. |
 | 13 | [`writer_excel`](V1/reports/writer_excel.py) | Bundled `btp_schedule.xlsx` workbook with one sheet per tabular artefact + a curated `summary` sheet. HALT runs get a slimmed-down workbook (`summary`, `routing_cleaned`, `audit_halt`, `audit_warn`). |
 
 Module boundaries are typed frozen dataclasses (`AuditResult`, `NormalisedResult`, `BomGraph`, `DemandResult`, `LotsResult`, `LotDagResult`, `FeasibilityResult`, `DurationResult`, `ScheduleResult`, `DiagnosticsResult`, `KpiResult`). Each module can be invoked from a Python REPL given the upstream result, which makes incremental debugging straightforward.

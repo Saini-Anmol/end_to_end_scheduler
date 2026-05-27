@@ -1,8 +1,13 @@
 """Route 10 — visualisation (Section 10 #10, approach-flow step 26).
 
-Thin orchestrator that calls writer_bom_graph + writer_gantt. The lot-level
-schedule + machine view live as sheets inside `btp_schedule.xlsx` (written by
-writer_excel); no standalone schedule.csv / machine_view.csv is produced.
+Thin orchestrator that calls writer_bom_graph + writer_gantt. Emits the BOM
+diagram plus FOUR Gantt HTMLs: one master view (`gantt_all.html`) covering
+every machine across the full horizon, and three piece-wise views
+(`gantt_part1.html`, `gantt_part2.html`, `gantt_part3.html`) each
+covering a third of the schedule's time range for legibility. The
+lot-level schedule + machine view live as sheets inside
+`btp_schedule.xlsx` (written by writer_excel); no standalone schedule.csv
+/ machine_view.csv is produced.
 """
 from __future__ import annotations
 

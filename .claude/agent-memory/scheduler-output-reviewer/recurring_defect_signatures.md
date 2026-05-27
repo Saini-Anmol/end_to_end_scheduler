@@ -61,6 +61,30 @@ metadata:
 
 ### t0 dynamic computation vs placeholder
 - CLAUDE.md L17 says use 2026-05-01 07:00 as placeholder.
-- Run 2327 uses t0=2026-05-16 13:58 (dynamically computed earliest mixer start).
+- Run 2327 onward uses t0=2026-05-16 13:58 (dynamically computed earliest mixer start).
 - This is more correct but audit_report.md should document it explicitly.
-- Verify by: `pd.read_csv('schedule.csv')['start_dt'].min()` -- that's t0.
+- Verify by: summary sheet row 3 (`t0`) in btp_schedule.xlsx.
+
+## Run 2355-26-05-2026 additions
+
+### BLOCK_OVERLAP with share=0 is not always a FEFO logic failure
+- When `share_reserved = 0.0000`, check FIRST if the block is genuinely infeasible (IL min-aging pushes earliest GT start past curing deadline).
+- b01 (curing=1022 from t0=2016-05-16 13:58): IL min_aging=480 forces GT start >= 1037 but GT must end by 1022 (start by 988). Genuinely infeasible window = -49 min.
+- For feasible blocks showing BLOCK_OVERLAP (b02-b10): likely a code defect where candidate_min computation in the multi-producer FEFO while loop prevents finding already-eligible producers.
+- **Orphaned producer lots (scheduled but never consumed) confirm this pattern.** If SSW/IL lots are produced for a block but have no consumer in reservation_log, their GT lot is infeasible for code reasons, not true infeasibility.
+
+### Lot-sizing alignment defect → aging-MAX violations
+- Single producer lot spanning > max_aging across multiple consumers causes MAX violations.
+- JIT pass cannot fix this: it targets the earliest consumer, which keeps the producer early; the latest consumer then breaches max_aging.
+- EXAMPLE: B355 (max_aging=7200) serves IL lots at start=6979 (earliest) and 13949 (latest). Gap to latest = 7210 > 7200.
+- Fix location: `lot_sizing.py` `_aggregate()` — must enforce `lot_end + aging_MAX >= latest_consumer_start` for EVERY consumer in the lot group, not just the first.
+- This is a V1 defect (not V2 scope): CLAUDE.md Section 8.C explicitly requires this.
+
+### L16 qty invariant pattern (clean)
+- Sequential qty-shared reservation is correctly implemented; sum(consumed_share) <= producer.qty for all producers, delta < 1e-6.
+- Confirmed for: MB231__20__0005, MB1232__30__0002, XMB349__20__0002, B355__30__0002, B460__40__0002.
+
+### JIT pass limitation (design constraint, not a bug)
+- JIT pass at forward_scheduler.py:664-770 only moves producers LATER (toward earliest consumer).
+- It CANNOT fix lots spanning > max_aging across multi-consumer groups -- that requires lot re-splitting at lot_sizing time.
+- JIT correctly handles single-consumer over-eager producers. Multi-consumer violations need lot_sizing fix.

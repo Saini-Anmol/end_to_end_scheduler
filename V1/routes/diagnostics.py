@@ -67,28 +67,31 @@ def run(
 
     violations: list[AgingViolation] = []
 
-    # 1. In-graph consumer-producer pairs.
+    # 1. In-graph consumer-producer pairs. A consumer may draw from multiple
+    #    producer lots per ingredient (MPQ-split); each pair is checked
+    #    independently against the ingredient's aging window.
     for s in schedule.scheduled:
         if s.qty == 0:
             continue  # zero-qty placeholder — no real consumption
-        for ing_item, producer_id in s.producer_lot_ids.items():
-            producer = sched_by_id.get(producer_id)
-            if producer is None or producer.qty == 0:
-                continue
-            mn, mx = aging.get(ing_item, (0, 10 ** 9))
-            gap = s.start_min - producer.end_min
-            if gap < mn:
-                violations.append(AgingViolation(
-                    consumer_lot_id=s.lot_id, producer_lot_id=producer_id,
-                    item_code=ing_item, edge_min=mn, edge_max=mx,
-                    actual_gap_min=gap, violation_type="MIN",
-                ))
-            elif gap > mx:
-                violations.append(AgingViolation(
-                    consumer_lot_id=s.lot_id, producer_lot_id=producer_id,
-                    item_code=ing_item, edge_min=mn, edge_max=mx,
-                    actual_gap_min=gap, violation_type="MAX",
-                ))
+        for ing_item, producer_ids in s.producer_lot_ids.items():
+            for producer_id in producer_ids:
+                producer = sched_by_id.get(producer_id)
+                if producer is None or producer.qty == 0:
+                    continue
+                mn, mx = aging.get(ing_item, (0, 10 ** 9))
+                gap = s.start_min - producer.end_min
+                if gap < mn:
+                    violations.append(AgingViolation(
+                        consumer_lot_id=s.lot_id, producer_lot_id=producer_id,
+                        item_code=ing_item, edge_min=mn, edge_max=mx,
+                        actual_gap_min=gap, violation_type="MIN",
+                    ))
+                elif gap > mx:
+                    violations.append(AgingViolation(
+                        consumer_lot_id=s.lot_id, producer_lot_id=producer_id,
+                        item_code=ing_item, edge_min=mn, edge_max=mx,
+                        actual_gap_min=gap, violation_type="MAX",
+                    ))
 
     # 2. Building → Curing edge.
     gt_min, gt_max = aging.get(settings.green_tyre_code, (0, 10 ** 9))

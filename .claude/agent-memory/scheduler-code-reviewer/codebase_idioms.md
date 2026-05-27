@@ -43,6 +43,19 @@ This is acceptable per CLAUDE.md Section 13: "run_id based on wall clock is OK f
 *folder naming* but must not appear in any data row." Verified: run_id does not appear
 in any CSV data rows.
 
+### MPQ "Tread" UOM 'MTR / Nos' normalises to 'MTR'
+`V1/utilities/unit_conversion.py:116`: `_norm_uom` splits on '/' taking left token,
+so 'MTR / Nos' -> 'MTR'. The MPQ row for Tread is correctly interpreted as MTR-based
+MPQ bounds. Tread demand is in MM from BOM edge. convert_qty(MPQ_MTR, 'MTR', 'MM') * 1000.
+Verified correct. Don't flag as UOM mismatch.
+
+### Producer lot referenced by N GT lots is expected, not a bug
+When an ingredient lot serves N curing blocks, it will be selected by FEFO for each
+GT lot whose serves_blocks overlap. The reservation_log will show N created+consumed
+pairs for the same producer_lot_id. This is correct in V1 because the producer qty
+covers all N blocks. Becomes a true exclusivity concern only when L16 is fully
+implemented (soft reservation prevents concurrent selection of the same lot).
+
 ### `_dedup_aging` groupby after sort
 `V1/routes/audit.py:427`: `aging_sorted.groupby("ItemCode", dropna=False, sort=False)`
 This uses `sort=False` but operates on `aging_sorted` which is pre-sorted. The

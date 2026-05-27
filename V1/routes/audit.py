@@ -107,15 +107,36 @@ HALT_CODE_MAP: dict[str, HaltCode] = {
 
 # --- Loaders ---------------------------------------------------------------
 
-def _load_inputs(input_dir: Path, sku: str) -> dict[str, pd.DataFrame]:
-    curing_path = input_dir / "BTP_PCR_May_Curing_Schedule.csv"
+def _load_inputs(
+    input_dir: Path, sku: str, curing_file: Path | None = None,
+) -> dict[str, pd.DataFrame]:
+    """Load raw inputs. `curing_file` overrides the default curing schedule
+    path; .csv and .xlsx are both supported (we sniff by suffix). The routing
+    workbook + BOM are always looked up in `input_dir`."""
+    if curing_file is None:
+        curing_path = input_dir / "BTP_PCR_May_Curing_Schedule.csv"
+    elif curing_file.is_absolute() or curing_file.exists():
+        # Absolute path, or relative path that resolves from the cwd
+        # (e.g. the user typed `input/foo.xlsx`).
+        curing_path = curing_file
+    else:
+        # Bare filename — look it up inside the inputs directory.
+        curing_path = input_dir / curing_file
     routing_path = input_dir / "BTP_Routing_1325216614081STMX0 BOM_Final (1).xlsx"
     if not curing_path.exists():
         raise FileNotFoundError(curing_path)
     if not routing_path.exists():
         raise FileNotFoundError(routing_path)
 
-    curing = pd.read_csv(curing_path)
+    suffix = curing_path.suffix.lower()
+    if suffix == ".csv":
+        curing = pd.read_csv(curing_path)
+    elif suffix in (".xlsx", ".xls"):
+        curing = pd.read_excel(curing_path)
+    else:
+        raise ValueError(
+            f"Unsupported curing file extension {suffix!r}; use .csv or .xlsx"
+        )
     xl = pd.ExcelFile(routing_path)
     return {
         "curing": curing,
@@ -536,13 +557,18 @@ def _scope_curing_to_pilot(curing: pd.DataFrame, settings: Settings) -> pd.DataF
 
 # --- Public entry ----------------------------------------------------------
 
-def run(input_dir: Path, settings: Settings) -> AuditResult:
+def run(
+    input_dir: Path, settings: Settings, curing_file: Path | None = None,
+) -> AuditResult:
     """Run the audit pass.
 
     Always returns an AuditResult. The bootstrap inspects `result.halt_findings`
     and decides whether to halt (write report, exit non-zero) or continue.
+
+    `curing_file` (optional) overrides the default
+    `<input_dir>/BTP_PCR_May_Curing_Schedule.csv`. Accepts `.csv` or `.xlsx`.
     """
-    raw = _load_inputs(input_dir, settings.sku_code)
+    raw = _load_inputs(input_dir, settings.sku_code, curing_file=curing_file)
     findings: list[AuditFinding] = []
 
     # Curing — pilot scope

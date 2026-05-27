@@ -23,6 +23,11 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="Directory containing the 3 raw input files.")
     p.add_argument("--outputs", type=Path, default=None,
                    help="Output root. Defaults to pilot.yaml 'output.root'.")
+    p.add_argument("--curing", type=Path, default=None,
+                   help="Override the curing schedule file. Path can be "
+                        "absolute or relative to --inputs. Accepts .csv "
+                        "or .xlsx. Defaults to "
+                        "<inputs>/BTP_PCR_May_Curing_Schedule.csv.")
     return p
 
 
@@ -33,6 +38,7 @@ def main(argv: list[str] | None = None) -> int:
         settings=settings,
         input_dir=args.inputs,
         output_root=args.outputs,
+        curing_file=args.curing,
     )
 
 

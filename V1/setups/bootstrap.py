@@ -12,7 +12,7 @@ Pipeline order:
   9.  forward_scheduler        — flag-and-continue (L11)
   10. diagnostics              — emits aging_violations + building_to_curing
   11. kpi
-  12. visualisation            — bom_graph.svg + gantt_*.html + schedule csvs
+  12. visualisation            — bom_graph.svg + 1 master + 3 piece-wise Gantt HTMLs
 
 Output artefacts land in `output/<HHMM-DD-MM-YYYY>/` (per pilot.yaml). The
 folder is created up-front; on HALT we still flush the artefacts written so
@@ -55,15 +55,23 @@ def run(
     input_dir: Path,
     output_root: Path | None = None,
     now: datetime | None = None,
+    curing_file: Path | None = None,
 ) -> int:
-    """Run the pipeline. Returns the process exit code."""
+    """Run the pipeline. Returns the process exit code.
+
+    `curing_file` (optional) overrides the default curing schedule path
+    (`<input_dir>/BTP_PCR_May_Curing_Schedule.csv`). Accepts `.csv` or
+    `.xlsx`.
+    """
     ctx = make_run_context(
         settings, input_dir=input_dir, output_root=output_root, now=now
     )
     print(f"[run] run_id={ctx.run_id}  output_dir={ctx.output_dir}", flush=True)
+    if curing_file is not None:
+        print(f"[run] curing_override={curing_file}", flush=True)
 
     # 1. Audit
-    audit_result = audit.run(ctx.input_dir, ctx.settings)
+    audit_result = audit.run(ctx.input_dir, ctx.settings, curing_file=curing_file)
     # Skip the legacy routing_cleaned.csv standalone file — the bundled
     # btp_schedule.xlsx carries the same data on the `routing_cleaned` sheet.
     writer_audit.write(audit_result, ctx.output_dir, write_routing_csv=False)
@@ -175,7 +183,7 @@ def run(
 
     # 12. Visualisation
     visualisation.run(sched, demand, bom, norm.t0, ctx.output_dir)
-    print("[viz] bom_graph.svg + gantt_*.html", flush=True)
+    print("[viz] bom_graph.svg + gantt_all.html + gantt_part{1,2,3}.html", flush=True)
 
     # 13. Bundled Excel workbook — single file containing every tabular sheet.
     workbook_path = writer_excel.write_full(

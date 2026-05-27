@@ -107,8 +107,8 @@ typed dataclasses. The full chain:
                   ┌─────────────────────▼─────────────────────┐
                   │  12. visualisation                        │
                   │     bom_graph.svg                         │
-                  │     schedule.csv + machine_view.csv       │
-                  │     gantt_<early|mid|late>.html           │
+                  │     gantt_all.html (master view —         │
+                  │       every machine × every lot)          │
                   └───────────────────────────────────────────┘
 ```
 
@@ -192,7 +192,7 @@ SEC/BATCH, batch 100 NOS), the full pipeline runs end-to-end:
 - **530 lots** sized; **56 under-min warnings** (B815, JT444, HS106, MR157 — total pilot demand for those items is below MPQ_Min because they're pooled across multiple SKUs in real production).
 - **519 lots scheduled** end-to-end with **0 MIN-aging violations** under V1's forward-pass discipline.
 - **Building → Curing** classification: every committed GT lot lands in the OK / LATE / EARLY tabulation.
-- **Output folder** for one run: `output/2237-20-05-2026/` with 14+ files including `schedule.csv`, `dag.json`, `bom_graph.svg`, `gantt_b00.html`, …
+- **Output folder** for one run: `output/2237-20-05-2026/` with 5 artefacts: `btp_schedule.xlsx`, `audit_report.md`, `dag.json`, `bom_graph.svg`, `gantt_all.html` (single master Gantt).
 
 A second run on the same inputs produces **byte-identical** `schedule.csv`,
 `kpi.csv`, `dag.json`, `routing_cleaned.csv`, `reservation_log.csv`,
