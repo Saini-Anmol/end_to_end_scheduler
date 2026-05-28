@@ -73,9 +73,11 @@ class TestRoutingCleaning:
             assert row["eligible_machine_count"] == len(row["machines_list"])
 
     def test_cleaned_count_known(self, result: audit.AuditResult) -> None:
-        # 62 raw - 1 EHT1000 dup - 5 Capstrip - 8 silently-collapsed shared
-        # master compounds = 48.
-        assert len(result.routing_cleaned_df) == 48
+        # L12 reversed 2026-05-28 — Capstrip now in scope, so the 5 Capstrip
+        # rows are NO LONGER dropped:
+        # 62 raw - 1 EHT1000 dup - 8 silently-collapsed shared master
+        # compounds = 53.
+        assert len(result.routing_cleaned_df) == 53
 
 
 class TestFindings:
@@ -107,29 +109,51 @@ class TestFindings:
                       & (key["operation_seq"] == 40)]
         assert len(eht_cal) == 1  # exactly one canonical row remains
 
-    def test_fixture_4_b460_mixed_unit_detected(
+    def test_fixture_4_b460_no_longer_mixed_unit(
         self, result: audit.AuditResult
     ) -> None:
-        """Section 17 Fixture 4 — B460 mixed-unit aging surfaced as Warn.
+        """Section 17 Fixture 4 — the latest aging dataset CORRECTED B460's
+        mixed-unit quirk: it is now 4 Hours / 96 Hours (both Hours), which
+        still normalises to (240, 5760) min — verified by
+        test_unit_conversion.py::TestNormalise::test_fixture_4_b460_in_aging_df.
 
-        Module 2 (unit_normalisation) will check the actual (240, 5760) min
-        values. Module 1's job is just to flag it.
+        Because the live aging data is now clean, the audit should raise NO
+        AGING_MIXED_UNITS finding. The detector logic itself is still
+        covered by test_mixed_unit_detector_synthetic below.
         """
         mixed = [f for f in result.warn_findings if f.code == "AGING_MIXED_UNITS"]
-        assert len(mixed) == 1, "Mixed-unit aging is aggregated to a single Warn"
-        assert "B460" in mixed[0].extras["item_codes"]
-        assert mixed[0].extras["unique_item_count"] > 0
+        assert len(mixed) == 0, (
+            "Latest aging data has no mixed-unit rows — detector should stay silent"
+        )
 
-    def test_capstrip_dropped_l12(self, result: audit.AuditResult,
-                                  settings: Settings) -> None:
+    def test_mixed_unit_detector_synthetic(self) -> None:
+        """Detector still fires on a genuinely mixed-unit row (regression
+        guard, decoupled from the live dataset)."""
+        import pandas as pd
+        from V1.routes.audit import _check_mixed_unit_aging
+        from V1.config.enums import FindingSeverity
+
+        synthetic = pd.DataFrame({
+            "ItemCode": ["FAKE_MIX"],
+            "MinAging": [4], "MinAgingUnit": ["Hours"],
+            "MaxAging": [4], "MaxAgingUnit": ["Days"],
+        })
+        findings: list[audit.AuditFinding] = []
+        _check_mixed_unit_aging(synthetic, findings)
+        assert len(findings) == 1
+        assert findings[0].code == "AGING_MIXED_UNITS"
+        assert findings[0].severity == FindingSeverity.WARN
+        assert "FAKE_MIX" in findings[0].extras["item_codes"]
+
+    def test_capstrip_not_dropped_after_l12_reversal(
+        self, result: audit.AuditResult, settings: Settings
+    ) -> None:
+        # L12 reversed 2026-05-28 — Capstrip is in scope, so the audit must
+        # NOT drop any Capstrip routing rows, and the exclusion list is empty.
         cap = [f for f in result.warn_findings
                if f.code == "CAPSTRIP_ROUTING_DROPPED"]
-        items_warned = {f.item_code for f in cap}
-        # Every capstrip item that *appears* in the routing should be in the
-        # Warn list. (Some configured items may not have routing rows.)
-        assert items_warned, "Expected at least one capstrip drop"
-        for item in items_warned:
-            assert item in settings.capstrip_items
+        assert cap == [], "Capstrip should no longer be dropped (L12 reversed)"
+        assert settings.capstrip_items == frozenset()
 
     def test_pilot_items_have_aging(self, result: audit.AuditResult,
                                     settings: Settings) -> None:

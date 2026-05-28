@@ -74,8 +74,10 @@ class TestWriteFull:
         assert "otif_pct" in df["metric"].values
 
     def test_summary_sheet_carries_run_id(self, workbook_path: Path) -> None:
+        # Summary is now a sectioned (section, metric, value) table; the
+        # run id lives under metric "Run ID".
         df = writer_excel.read_sheet(workbook_path, "summary")
-        row = df[df["metric"] == "run_id"]
+        row = df[df["metric"] == "Run ID"]
         assert len(row) == 1
         assert str(row.iloc[0]["value"]) == "TEST"
 

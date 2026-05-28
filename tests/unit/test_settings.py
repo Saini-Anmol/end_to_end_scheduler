@@ -36,16 +36,20 @@ def test_building_pool_is_strings_l23() -> None:
     assert s.building_primary == min(s.building_pool)
 
 
-def test_8_in_scope_components() -> None:
+def test_9_in_scope_components() -> None:
+    # L12 reversed 2026-05-28 — Capstrip now in scope, so CAP 66 - CAPSTRIP
+    # joins the AND-join set, taking it from 8 → 9 components.
     s = load_settings()
-    assert len(s.green_tyre_components) == 8
+    assert len(s.green_tyre_components) == 9
     assert "BD-12843443-4" in s.green_tyre_components
+    assert "CAP 66 - CAPSTRIP" in s.green_tyre_components
 
 
-def test_capstrip_exclusion_list_l12() -> None:
+def test_capstrip_exclusion_list_empty_after_l12_reversal() -> None:
+    # L12 reversed — exclusion list is now empty; the full Capstrip chain
+    # is scheduled.
     s = load_settings()
-    for name in ["CAP 66 - CAPSTRIP", "CAP 66-MOTHERROLL", "CAP 66", "B616M", "MB614"]:
-        assert name in s.capstrip_items
+    assert s.capstrip_items == frozenset()
 
 
 def test_run_id_format_hhmm_dd_mm_yyyy() -> None:

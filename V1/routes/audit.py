@@ -175,6 +175,45 @@ def _check_null_proc_time(routing: pd.DataFrame, findings: list[AuditFinding]) -
         ))
 
 
+def _check_batch_uom_consistency(
+    routing: pd.DataFrame, findings: list[AuditFinding],
+) -> None:
+    """Warn when proc_time_UOM is SEC/BATCH but batch_size or batch_UNIT is
+    null. Without a batch size, time_calculation falls back to per-cycle
+    interpretation (one cycle per output unit), which can wildly inflate
+    durations — e.g. BD-12843443-4 Fillering at 10 SEC/BATCH without
+    batch_size was being counted as 10 SEC per piece instead of 10 SEC per
+    batch of 100 pieces, making FILLERING look like a single-machine
+    bottleneck."""
+    for idx, row in routing.iterrows():
+        if pd.isna(row.get("proc_time")):
+            continue
+        proc_uom = str(row.get("proc_time_UOM", "")).strip().upper()
+        if "/BATCH" not in proc_uom:
+            continue
+        if pd.notna(row.get("batch_size")) and pd.notna(row.get("batch_UNIT")):
+            continue
+        findings.append(AuditFinding(
+            severity=FindingSeverity.WARN,
+            code="ROUTING_BATCH_UOM_NO_BATCH_SIZE",
+            sheet="Routing",
+            source_row=int(idx),
+            item_code=str(row.get("routed_product", "")),
+            message=(
+                f"routed_product={row.get('routed_product')!r} "
+                f"op_seq={row.get('operation_seq')} has "
+                f"proc_time_UOM={proc_uom!r} (\"per batch\") but "
+                f"batch_size={row.get('batch_size')!r}, "
+                f"batch_UNIT={row.get('batch_UNIT')!r}. "
+                "Without a batch size, time_calculation will treat each "
+                "output unit as one cycle, which usually mis-prices the "
+                "operation. Planner should supply batch_size + batch_UNIT."
+            ),
+            extras={"operation_seq": int(row.get("operation_seq"))
+                    if pd.notna(row.get("operation_seq")) else None},
+        ))
+
+
 # Routing columns that define a scheduling operation. If these match across
 # rows with the same (routed_product, op_seq), the duplicate is benign
 # (same master compound used by several downstream products); we silently
@@ -577,6 +616,7 @@ def run(
 
     # Routing — findings on the raw frame, then clean
     _check_null_proc_time(raw["routing"], findings)
+    _check_batch_uom_consistency(raw["routing"], findings)
     dup_drop = _check_routing_duplicate(raw["routing"], findings)
     capstrip_drop = _check_capstrip(raw["routing"], settings, findings)
     _check_null_transfer_time(raw["routing"], settings, findings)

@@ -61,6 +61,9 @@ PD_READ_HEADER = HEADER_ROW - 1  # 0-indexed → 1
 # Excel sheet names are capped at 31 chars; pick short, stable names.
 SHEET_NAMES = (
     "summary",
+    "otif_by_block",
+    "bottlenecks",
+    "unscheduled",
     "kpi",
     "schedule",
     "machine_view",
@@ -76,7 +79,10 @@ SHEET_NAMES = (
 
 # Human-readable titles rendered in each sheet's row 1.
 _SHEET_TITLES: dict[str, str] = {
-    "summary": "Run Summary",
+    "summary": "Executive Summary",
+    "otif_by_block": "OTIF by Curing Block (why each block is OK / LATE)",
+    "bottlenecks": "Machine Bottlenecks (utilisation, ranked)",
+    "unscheduled": "Unscheduled Lots + Downstream Impact",
     "kpi": "Key Performance Indicators",
     "schedule": "Production Schedule",
     "machine_view": "Machine-Level Schedule",
@@ -143,37 +149,154 @@ def read_sheet(workbook_path: Path, sheet_name: str) -> pd.DataFrame:
 
 # --- builders for each sheet ----------------------------------------------
 
+def _gt_tyre_supply(
+    schedule: ScheduleResult, diag: DiagnosticsResult, settings: Settings,
+) -> dict[str, float]:
+    """Tyres delivered on-time vs late, derived from GT lot qty × block
+    classification. One GT lot serves one curing block (L1)."""
+    cls_by_block = {
+        r.block_id: r.classification for r in diag.building_to_curing
+    }
+    on_time = late = early = zero = 0.0
+    blocks_on_time = blocks_late = 0
+    for s in schedule.scheduled:
+        if s.item_code != settings.green_tyre_code:
+            continue
+        if s.qty <= 0:
+            continue
+        block = s.serves_blocks[0] if s.serves_blocks else None
+        cls = cls_by_block.get(block, "")
+        if cls == "OK":
+            on_time += s.qty
+            blocks_on_time += 1
+        elif cls == "LATE":
+            late += s.qty
+            blocks_late += 1
+        elif cls == "EARLY":
+            early += s.qty
+        else:
+            zero += s.qty
+    return {
+        "tyres_on_time": on_time,
+        "tyres_late": late,
+        "tyres_early": early,
+        "blocks_on_time": blocks_on_time,
+        "blocks_late": blocks_late,
+    }
+
+
+def _busiest_machine(kpi: KpiResult) -> tuple[str, float] | None:
+    """(machine_id, util_pct) of the highest-utilisation machine."""
+    if not kpi.machines:
+        return None
+    top = max(kpi.machines, key=lambda m: m.utilisation_pct)
+    return (top.machine_id, top.utilisation_pct)
+
+
+def _top_consumer_of_machine(
+    schedule: ScheduleResult, machine_id: str,
+) -> tuple[str, float] | None:
+    """(item_code, pct_of_machine_busy_min) hogging the most time on a machine."""
+    by_item: dict[str, int] = {}
+    total = 0
+    for s in schedule.scheduled:
+        if s.machine_id != machine_id or s.duration_min <= 0:
+            continue
+        by_item[s.item_code] = by_item.get(s.item_code, 0) + s.duration_min
+        total += s.duration_min
+    if not by_item or total == 0:
+        return None
+    item = max(by_item, key=lambda k: by_item[k])
+    return (item, round(by_item[item] / total * 100, 1))
+
+
 def _summary_df(
     audit: AuditResult, lots: LotsResult, schedule: ScheduleResult,
     diag: DiagnosticsResult, kpi: KpiResult, settings: Settings,
     t0: datetime, run_id: str,
 ) -> pd.DataFrame:
-    rows: list[tuple[str, object]] = [
-        ("run_id", run_id),
-        ("t0", t0.isoformat(sep=" ")),
-        ("sku_code", settings.sku_code),
-        ("sku_description", settings.sku_description),
-        ("green_tyre_code", settings.green_tyre_code),
-        ("curing_press", settings.curing_press),
-        ("horizon_start", settings.horizon_start.isoformat(sep=" ")),
-        ("horizon_end", settings.horizon_end.isoformat(sep=" ")),
-        ("total_demand_tyres", settings.total_demand_tyres),
-        ("audit_halt_findings", len(audit.halt_findings)),
-        ("audit_warn_findings", len(audit.warn_findings)),
-        ("lots_sized", len(lots.lots)),
-        ("lot_sizing_warnings", len(lots.warnings)),
-        ("lots_scheduled", len(schedule.scheduled)),
-        ("lots_infeasible", len(schedule.infeasibilities)),
-        ("aging_violations", len(diag.aging_violations)),
-        ("building_to_curing_ok", kpi.building_lots_ok),
-        ("building_to_curing_late", kpi.building_lots_late),
-        ("building_to_curing_early", kpi.building_lots_early),
-        ("otif_pct", round(kpi.otif_pct, 3)),
-        ("total_processing_min", kpi.total_processing_min),
-        ("schedule_span_min", kpi.schedule_span_min),
-        ("changeover_min_v1", kpi.changeover_min),
-    ]
-    return pd.DataFrame(rows, columns=["metric", "value"])
+    """Sectioned executive summary — section / metric / value.
+
+    Sections, top to bottom:
+      1. RUN METADATA          — what was run
+      2. LOT PRODUCTION FUNNEL — made → scheduled → not-scheduled → on-time/late
+      3. GREEN TYRE SUPPLY     — curing demand fulfilment (OTIF, tyres on time)
+      4. BOTTLENECK            — busiest machine + what hogs it
+      5. DATA QUALITY          — audit findings + aging violations
+    """
+    n_sized = len(lots.lots)
+    n_sched = len(schedule.scheduled)
+    n_infeasible = len(schedule.infeasibilities)
+    n_late_lots = sum(1 for s in schedule.scheduled if not s.on_time_flag)
+    n_ontime_lots = n_sched - n_late_lots
+
+    supply = _gt_tyre_supply(schedule, diag, settings)
+    tyres_demand = settings.total_demand_tyres
+    tyres_ot = supply["tyres_on_time"]
+
+    busiest = _busiest_machine(kpi)
+    span_h = round(kpi.schedule_span_min / 60.0, 1)
+
+    rows: list[tuple[str, str, object]] = []
+
+    def add(section: str, metric: str, value: object) -> None:
+        rows.append((section, metric, value))
+
+    # 1. RUN METADATA
+    add("RUN METADATA", "Run ID", run_id)
+    add("RUN METADATA", "Global start (t0)", t0.isoformat(sep=" "))
+    add("RUN METADATA", "SKU", settings.sku_code)
+    add("RUN METADATA", "Description", settings.sku_description)
+    add("RUN METADATA", "Green tyre", settings.green_tyre_code)
+    add("RUN METADATA", "Curing press", settings.curing_press)
+    add("RUN METADATA", "Curing horizon",
+        f"{settings.horizon_start.isoformat(sep=' ')} → "
+        f"{settings.horizon_end.isoformat(sep=' ')}")
+    add("RUN METADATA", "Schedule span", f"{kpi.schedule_span_min} min ({span_h} h)")
+
+    # 2. LOT PRODUCTION FUNNEL
+    add("LOT PRODUCTION FUNNEL", "Total lots made (sized)", n_sized)
+    add("LOT PRODUCTION FUNNEL", "Lots scheduled (committed)",
+        f"{n_sched}  ({_pct(n_sched, n_sized)}%)")
+    add("LOT PRODUCTION FUNNEL", "Lots NOT scheduled (infeasible)", n_infeasible)
+    add("LOT PRODUCTION FUNNEL", "  → on-time lots", n_ontime_lots)
+    add("LOT PRODUCTION FUNNEL", "  → late lots (aging breach)", n_late_lots)
+    add("LOT PRODUCTION FUNNEL", "Total processing minutes", kpi.total_processing_min)
+
+    # 3. GREEN TYRE SUPPLY
+    add("GREEN TYRE SUPPLY", "Curing blocks (demand events)",
+        kpi.building_lots_ok + kpi.building_lots_late + kpi.building_lots_early)
+    add("GREEN TYRE SUPPLY", "Blocks delivered ON TIME", kpi.building_lots_ok)
+    add("GREEN TYRE SUPPLY", "Blocks delivered LATE", kpi.building_lots_late)
+    add("GREEN TYRE SUPPLY", "Blocks delivered EARLY", kpi.building_lots_early)
+    add("GREEN TYRE SUPPLY", "OTIF %", f"{round(kpi.otif_pct, 1)}%")
+    add("GREEN TYRE SUPPLY", "Tyres demanded (total)", tyres_demand)
+    add("GREEN TYRE SUPPLY", "Tyres deliverable ON TIME", int(tyres_ot))
+    add("GREEN TYRE SUPPLY", "Tyres LATE", int(supply["tyres_late"]))
+    add("GREEN TYRE SUPPLY", "On-time tyre %",
+        f"{_pct(tyres_ot, tyres_ot + supply['tyres_late'])}%")
+
+    # 4. BOTTLENECK
+    if busiest is not None:
+        mid, util = busiest
+        add("BOTTLENECK", "Busiest machine", f"{mid}  ({round(util, 1)}% utilised)")
+        top = _top_consumer_of_machine(schedule, mid)
+        if top is not None:
+            add("BOTTLENECK", f"Top consumer of {mid}",
+                f"{top[0]}  ({top[1]}% of its time)")
+    add("BOTTLENECK", "Changeover minutes (V1)", kpi.changeover_min)
+
+    # 5. DATA QUALITY
+    add("DATA QUALITY", "Audit HALT findings", len(audit.halt_findings))
+    add("DATA QUALITY", "Audit WARN findings", len(audit.warn_findings))
+    add("DATA QUALITY", "Aging-window violations", len(diag.aging_violations))
+    add("DATA QUALITY", "Lot-sizing under-min warnings", len(lots.warnings))
+
+    return pd.DataFrame(rows, columns=["section", "metric", "value"])
+
+
+def _pct(num: float, den: float) -> float:
+    return round(num / den * 100, 1) if den else 0.0
 
 
 def _kpi_df(kpi: KpiResult) -> pd.DataFrame:
@@ -284,6 +407,103 @@ def _infeasibilities_df(schedule: ScheduleResult) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=cols)
 
 
+def _otif_by_block_df(
+    diag: DiagnosticsResult, schedule: ScheduleResult, settings: Settings,
+) -> pd.DataFrame:
+    """Per-curing-block OTIF detail — the WHY behind each LATE block.
+
+    For each Building→Curing record we add the tyre qty and, for LATE
+    blocks, the binding component (the GT lot's latest-finishing producer).
+    """
+    # Index GT lots by block + the latest producer per GT lot.
+    gt_by_block: dict[str, ScheduledLot] = {}
+    sched_by_id = {s.lot_id: s for s in schedule.scheduled}
+    for s in schedule.scheduled:
+        if s.item_code == settings.green_tyre_code and s.serves_blocks:
+            gt_by_block[s.serves_blocks[0]] = s
+
+    def _binding_component(gt: ScheduledLot) -> str:
+        """Item whose producer finished latest — the reason GT couldn't
+        start sooner."""
+        latest_end = -1
+        latest_item = ""
+        for ing, prod_ids in gt.producer_lot_ids.items():
+            for pid in prod_ids:
+                p = sched_by_id.get(pid)
+                if p is not None and p.end_min > latest_end:
+                    latest_end = p.end_min
+                    latest_item = ing
+        return latest_item
+
+    rows = []
+    for r in diag.building_to_curing:
+        gt = gt_by_block.get(r.block_id)
+        tyres = int(gt.qty) if gt is not None else 0
+        binding = ""
+        if r.classification == "LATE" and gt is not None:
+            binding = _binding_component(gt)
+        rows.append({
+            "block_id": r.block_id,
+            "tyres": tyres,
+            "curing_start_min": r.curing_start_min,
+            "gt_end_min": r.gt_end_min,
+            "gap_min": r.gap_min,
+            "classification": r.classification,
+            "binding_component": binding,
+        })
+    cols = ["block_id", "tyres", "curing_start_min", "gt_end_min",
+            "gap_min", "classification", "binding_component"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _bottlenecks_df(
+    kpi: KpiResult, schedule: ScheduleResult,
+) -> pd.DataFrame:
+    """Machine utilisation ranked high→low, with the item hogging each
+    machine. The top rows are the binding resources for the schedule span."""
+    rows = []
+    for m in sorted(kpi.machines, key=lambda x: -x.utilisation_pct):
+        top = _top_consumer_of_machine(schedule, m.machine_id)
+        lots_on = sum(1 for s in schedule.scheduled
+                      if s.machine_id == m.machine_id and s.duration_min > 0)
+        rows.append({
+            "machine_id": m.machine_id,
+            "lots": lots_on,
+            "busy_min": m.busy_min,
+            "span_min": m.span_min,
+            "utilisation_pct": round(m.utilisation_pct, 1),
+            "top_item": top[0] if top else "",
+            "top_item_pct_of_machine": top[1] if top else 0.0,
+        })
+    cols = ["machine_id", "lots", "busy_min", "span_min", "utilisation_pct",
+            "top_item", "top_item_pct_of_machine"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _unscheduled_df(
+    schedule: ScheduleResult, lots: LotsResult, settings: Settings,
+) -> pd.DataFrame:
+    """Not-scheduled (infeasible) lots + the downstream curing blocks each
+    one would have fed. Empty when every lot committed (the common case
+    under L11 flag-and-continue)."""
+    serves_by_lot = {l.lot_id: l.serves_blocks for l in lots.lots}
+    rows = []
+    for i in schedule.infeasibilities:
+        blocks = serves_by_lot.get(i.lot_id, [])
+        rows.append({
+            "lot_id": i.lot_id,
+            "item_code": i.item_code,
+            "op_seq": i.op_seq,
+            "binding_constraint": i.binding_constraint,
+            "downstream_blocks_affected": "|".join(blocks) if blocks else "—",
+            "n_blocks_affected": len(blocks),
+            "message": i.message,
+        })
+    cols = ["lot_id", "item_code", "op_seq", "binding_constraint",
+            "downstream_blocks_affected", "n_blocks_affected", "message"]
+    return pd.DataFrame(rows, columns=cols)
+
+
 def _reservation_log_df(schedule: ScheduleResult) -> pd.DataFrame:
     rows = [
         {
@@ -346,6 +566,9 @@ def write_full(
     sheets: dict[str, pd.DataFrame] = {
         "summary": _summary_df(audit, lots, schedule, diag, kpi,
                                settings, t0, run_id),
+        "otif_by_block": _otif_by_block_df(diag, schedule, settings),
+        "bottlenecks": _bottlenecks_df(kpi, schedule),
+        "unscheduled": _unscheduled_df(schedule, lots, settings),
         "kpi": _kpi_df(kpi),
         "schedule": sched_df,
         "machine_view": _machine_view_df(sched_df),
@@ -445,12 +668,16 @@ def _format_sheet(ws, df: pd.DataFrame, sheet_name: str) -> None:
         _shade_kpi_utilisation(ws, df)
     elif sheet_name in ("schedule", "machine_view") and n_rows > 0:
         _shade_on_time_flag(ws, df)
-    elif sheet_name == "building_to_curing" and n_rows > 0:
+    elif sheet_name in ("building_to_curing", "otif_by_block") and n_rows > 0:
         _shade_classification(ws, df)
     elif sheet_name == "aging_violations" and n_rows > 0:
         _shade_violation_type(ws, df)
     elif sheet_name in ("audit_halt", "audit_warn") and n_rows > 0:
         _shade_severity(ws, df)
+    elif sheet_name == "summary" and n_rows > 0:
+        _shade_summary_sections(ws, df)
+    elif sheet_name == "bottlenecks" and n_rows > 0:
+        _shade_bottleneck_util(ws, df)
 
     # --- Column widths (header text length + 2, capped at 60) -------------
     for col_idx, col in enumerate(df.columns, start=1):
@@ -515,6 +742,47 @@ def _shade_classification(ws, df: pd.DataFrame) -> None:
         rgb = _CLASSIFICATION_FILL.get(cls)
         if rgb is not None:
             ws.cell(row=row_idx, column=col).fill = _fill(rgb)
+
+
+# Light section-band fills for the summary sheet (rotating, easy to scan).
+_SECTION_BANDS = ["EAF1FB", "E8F6EF", "FBF2E0", "F3EEFA", "FDEDED"]
+
+
+def _shade_summary_sections(ws, df: pd.DataFrame) -> None:
+    """Tint the `section` cell of the summary so each block is visually
+    grouped. Also bold the first row of each section's section cell."""
+    sec_col = _col_index(df, "section")
+    if sec_col is None:
+        return
+    seen: dict[str, str] = {}
+    band_i = 0
+    prev = None
+    for row_idx, df_row_idx in zip(_data_range(len(df)), df.index):
+        sec = str(df.at[df_row_idx, "section"])
+        if sec not in seen:
+            seen[sec] = _SECTION_BANDS[band_i % len(_SECTION_BANDS)]
+            band_i += 1
+        ws.cell(row=row_idx, column=sec_col).fill = _fill(seen[sec])
+        # Blank the repeated section label so only the first row shows it.
+        if sec == prev:
+            ws.cell(row=row_idx, column=sec_col).value = ""
+        else:
+            ws.cell(row=row_idx, column=sec_col).font = Font(bold=True)
+        prev = sec
+
+
+def _shade_bottleneck_util(ws, df: pd.DataFrame) -> None:
+    col = _col_index(df, "utilisation_pct")
+    if col is None:
+        return
+    for row_idx, df_row_idx in zip(_data_range(len(df)), df.index):
+        try:
+            pct = float(df.at[df_row_idx, "utilisation_pct"])
+        except (TypeError, ValueError):
+            continue
+        fill = _utilisation_fill(pct)
+        if fill is not None:
+            ws.cell(row=row_idx, column=col).fill = fill
 
 
 def _shade_violation_type(ws, df: pd.DataFrame) -> None:

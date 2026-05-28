@@ -124,7 +124,10 @@ A successful run emits **seven files**:
 
 | Sheet | Columns / description |
 |---|---|
-| `summary` | Run metadata + headline KPIs (run_id, t0, sku, OTIF, processing minutes, span). |
+| `summary` | **Sectioned executive summary** (`section, metric, value`): RUN METADATA · LOT PRODUCTION FUNNEL (lots made → scheduled → not-scheduled → on-time/late) · GREEN TYRE SUPPLY (blocks + tyres on-time vs late, OTIF %) · BOTTLENECK (busiest machine + top consumer) · DATA QUALITY (audit findings, aging violations). |
+| `otif_by_block` | One row per curing block: `block_id, tyres, curing_start_min, gt_end_min, gap_min, classification, binding_component`. For every LATE block, `binding_component` names the latest-finishing component that delayed Building. |
+| `bottlenecks` | Machine utilisation ranked high→low: `machine_id, lots, busy_min, span_min, utilisation_pct, top_item, top_item_pct_of_machine`. The top rows are the binding resources for the schedule span. |
+| `unscheduled` | Not-scheduled (infeasible) lots + downstream curing blocks each would have fed: `lot_id, item_code, op_seq, binding_constraint, downstream_blocks_affected, n_blocks_affected, message`. Empty when every lot commits (the common case under L11). |
 | `kpi` | Full KPI table: counts, OTIF %, aging-violation breakdown, processing minutes, schedule span, per-machine utilisation. |
 | `schedule` | Lot-level schedule. `lot_id, item_code, item_type, op_seq, machine_id, start_min, end_min, duration_min, qty, uom, serves_blocks, on_time_flag, start_dt, end_dt`. `on_time_flag=False` marks lots that finished after their aging-MIN ceiling (L11 flag-and-continue). |
 | `machine_view` | Same rows sorted by `(machine_id, start_min, lot_id)` for floor-level execution. |

@@ -41,14 +41,14 @@ building:
   primary: "6001"                  # spill to next-lowest only on aging-MAX breach
   tyres_per_cycle: 2               # Each VMIMaxx cycle produces 2 green tyres
 
-# L12 — Capstrip chain exclusion. Skip entirely from lots/schedule/infeasibilities.
+# L12 — Capstrip chain. REVERSED by planner on 2026-05-28: the latest aging
+# dataset resolved the CAP 66 - CAPSTRIP 24h/48h conflict, naming is
+# standardised to "Capstrip", and the chain is now in scope. Exclusion list
+# left empty so the engine schedules the full Capstrip chain.
+# (Pre Cap Strip / CAP 66-MOTHERROLL still has no MPQ row → it lot-sizes as a
+#  single un-split mother roll until the planner supplies an MPQ.)
 exclusions:
-  capstrip_items:
-    - "CAP 66 - CAPSTRIP"
-    - "CAP 66-MOTHERROLL"
-    - "CAP 66"
-    - "B616M"
-    - "MB614"
+  capstrip_items: []
 
 # L13 — Work-Away reclaim/scrap inputs. Treated as already available.
 work_away_items:
@@ -62,7 +62,8 @@ output:
   run_id_format: "%H%M-%d-%m-%Y"
   root: "output"
 
-# 8 in-scope Green-Tyre components (the AND-join set for Building lots).
+# 9 in-scope Green-Tyre components (the AND-join set for Building lots).
+# CAP 66 - CAPSTRIP added 2026-05-28 when L12 was reversed (Capstrip in scope).
 green_tyre_components:
   - "CPJ1218-162MM/29°"
   - "CPJ1218-154MM/29°-1"
@@ -72,3 +73,4 @@ green_tyre_components:
   - "EHT1000-640MM/90°"
   - "EHT1000 -480MM/90°"
   - "BD-12843443-4"
+  - "CAP 66 - CAPSTRIP"

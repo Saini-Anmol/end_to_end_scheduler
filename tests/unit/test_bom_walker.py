@@ -48,13 +48,15 @@ class TestShape:
         kids = bom.children(settings.sku_code)
         assert kids == [settings.green_tyre_code]
 
-    def test_gt_has_8_in_scope_components(self, bom: BomGraph,
+    def test_gt_has_9_in_scope_components(self, bom: BomGraph,
                                           settings: Settings) -> None:
+        # L12 reversed 2026-05-28 — Capstrip in scope. With an empty
+        # capstrip seed list, nothing is flagged is_capstrip, so
+        # exclude_capstrip=True returns all 9 GT children (incl. Capstrip).
         kids = bom.children(settings.green_tyre_code, exclude_capstrip=True)
         for comp in settings.green_tyre_components:
             assert comp in kids, f"missing in-scope component: {comp!r}"
-        # Capstrip subtree excluded by default
-        assert "CAP 66 - CAPSTRIP" not in kids
+        assert "CAP 66 - CAPSTRIP" in kids
 
     def test_gt_has_9_children_including_capstrip(
         self, bom: BomGraph, settings: Settings
@@ -72,14 +74,18 @@ class TestCapstripL12:
             if seed in bom.graph:
                 assert bom.graph.nodes[seed].get("is_capstrip") is True
 
-    def test_capstrip_subtree_propagated(self, bom: BomGraph,
-                                         settings: Settings) -> None:
-        """Children of CAP 66 (and so on) inherit the flag."""
-        # CAP 66 - CAPSTRIP is the seed; its descendants should be flagged.
-        descendants_full = nx.descendants(bom.graph, "CAP 66 - CAPSTRIP")
-        for d in descendants_full:
-            assert bom.graph.nodes[d].get("is_capstrip"), (
-                f"capstrip descendant {d!r} not flagged"
+    def test_capstrip_subtree_not_flagged_after_l12_reversal(
+        self, bom: BomGraph, settings: Settings
+    ) -> None:
+        """L12 reversed — with an empty capstrip seed list, the Capstrip
+        subtree is NO LONGER flagged is_capstrip; the chain schedules
+        normally alongside everything else."""
+        chain = ["CAP 66 - CAPSTRIP"] + list(
+            nx.descendants(bom.graph, "CAP 66 - CAPSTRIP")
+        )
+        for node in chain:
+            assert not bom.graph.nodes[node].get("is_capstrip"), (
+                f"{node!r} still flagged is_capstrip after L12 reversal"
             )
 
     def test_nonstrip_nodes_not_flagged(self, bom: BomGraph,
